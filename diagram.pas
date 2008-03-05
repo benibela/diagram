@@ -5,12 +5,12 @@ unit diagram;
 interface
 
 uses
-  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs;
+  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math;
 
 type
   TDiagram=class;
   TAxis=class;
-  TValueTranslateEvent=procedure (sender: TAxis; value: longint; var translated: string) of object;
+  TValueTranslateEvent=procedure (sender: TAxis; i: float; var translated: string) of object;
   TLegend=record
     visible: boolean;
     width,height: longint;
@@ -22,20 +22,24 @@ type
 
   TAxis=class
   protected
-    function doTranslate(const i:longint): string;
+    function doTranslate(const i:float): string;
   public
     title: string;
-    min,max,resolution: longint;
+    min,max,resolution: float;
     auto: boolean;
     valueTranslate: TValueTranslateEvent;
     showLine: boolean;
     lineColor: TColor;
     
-    function translate(const i:longint): string;inline;
+    function translate(const i:float): string;inline;
+    procedure autoResolution(imageSize: longint);
   end;
   TDataPoint=record
-    x,y:longint;
+    x,y:float;
   end;
+
+  { TDataList }
+
   TDataList=class
   protected
     owner: TDiagram;
@@ -45,8 +49,10 @@ type
     color: TColor;
     title:string;
     //function getPoint(x:longint): longint;
-    procedure addPoint(x,y:longint); overload;
-    procedure addPoint(y:longint); overload;
+    procedure clear;
+    function count:longint;
+    procedure addPoint(x,y:float); overload;
+    procedure addPoint(y:float); overload;
   end;
   TDiagramKind=(dkLines);
 
@@ -56,6 +62,8 @@ type
   protected
     FKind: TDiagramKind;
   public
+    updateAxisEveryBitmapUpdate:boolean;
+    
     valueAreaX,valueAreaY,valueAreaWidth,valueAreaHeight,valueAreaRight,valueAreaBottom: longint;
     DataLists: TFPList;
     XAxis,YAxis: TAxis;
@@ -72,9 +80,10 @@ type
     procedure clear;
     function addDataList: TDataList;
 
+    procedure updateAxis(xaxisMove: longint=0);
     function update(xaxisMove: longint=0): TBitmap;
 
-    function posXToDataX(x:longint):longint;
+    function posXToDataX(x:longint):float;
 
     //procedure XAxisReduce();
 
@@ -83,20 +92,56 @@ type
 
 implementation
 
-function TAxis.doTranslate(const i:longint): string;
+function TAxis.doTranslate(const i:float): string;
 begin
-  result:=inttostr(i);
+  if frac(i)<1e-16 then result:=inttostr(round(i))
+  else if resolution>1 then result:=inttostr(round(i))
+  else result:=format('%.2g',[i]);
   if assigned(valueTranslate) then
     valueTranslate(self,i,result);
 end;
 
-function TAxis.translate(const i: longint): string;inline;
+function TAxis.translate(const i: float): string;inline;
 begin
   result:=doTranslate(i);
 end;
 
+procedure TAxis.autoResolution(imageSize: longint);
+begin
+    {if max-min<imageSize then begin
+      case imageSize div (max-min) of
+        0..9: resolution:=10;
+        else resolution:=1;
+      end;
+    end else begin
+      case (max-min) div imageSize of
+        0..9: resolution:=1;
+        10..99: resolution:=10;
+        100..999: resolution:=100;
+        1000..9999: resolution:=1000;
+      end;
+    end;}
+    //Count of intervals: (max-min) / resolution
+    //Size   "     "    : imageSize / Count
+    if abs(max-min)<1e-16 then resolution:=1
+    else if imageSize / (max-min)>20 then resolution:=1
+    else if imageSize / (max-min)>0 then resolution:=(max-min)*30 / imageSize
+    else resolution:=(max-min)*30 / imageSize;
 
-procedure TDataList.addPoint(x,y:longint);
+end;
+
+procedure TDataList.clear;
+begin
+  setlength(points,0);
+  pointCount:=0;
+end;
+
+function TDataList.count: longint;
+begin
+  result:=pointCount;
+end;
+
+procedure TDataList.addPoint(x,y:float);
 var i:integer;
 begin
   if pointCount=0 then begin
@@ -126,7 +171,7 @@ begin
   points[i].x:=x;
   points[i].y:=y;
 end;
-procedure TDataList.addPoint(y:longint);
+procedure TDataList.addPoint(y:float);
 begin
   if pointCount=0 then addPoint(0,y)
   else addPoint(points[pointCount-1].x+1,y);
@@ -152,7 +197,7 @@ begin
   legend.auto:=true;
   legend.visible:=true;
   legend.color:=clBtnFace;
-  
+  updateAxisEveryBitmapUpdate:=true;
 end;
 
 destructor TDiagram.destroy;
@@ -182,45 +227,22 @@ begin
   DataLists.Add(Result);
 end;
 
-function TDiagram.update(xaxisMove: longint=0): TBitmap;
-  procedure autoResolution(aself: TAxis;imageSize: longint);
-  begin
-    with aself do begin
-      {if max-min<imageSize then begin
-        case imageSize div (max-min) of
-          0..9: resolution:=10;
-          else resolution:=1;
-        end;
-      end else begin
-        case (max-min) div imageSize of
-          0..9: resolution:=1;
-          10..99: resolution:=10;
-          100..999: resolution:=100;
-          1000..9999: resolution:=1000;
-        end;
-      end;}
-      //Count of intervals: (max-min) / resolution
-      //Size   "     "    : imageSize / Count
-      if max-min=0 then resolution:=1
-      else if imageSize div (max-min)>20 then resolution:=1
-      else if imageSize div (max-min)>0 then resolution:=(max-min)*30 div imageSize
-      else resolution:=(max-min)*30 div imageSize;
-    end;
-  end;
+procedure TDiagram.updateAxis(xaxisMove: longint);
 
 var i,j,pos,textHeightC,legendX:longint;
-    xaxisOldMin: longint;
+    p:float;
+    xaxisOldMin: float;
     list:TDataList;
     temp,caption,captionOld:string;
 begin
   if XAxis.auto then begin
-    XAxis.min:=high(XAxis.min);
-    XAxis.max:=low(XAxis.max);
+    XAxis.min:=1e1000;
+    XAxis.max:=-1e1000;
     XAxis.resolution:=1;
   end;
   if YAxis.auto then begin
-    YAxis.min:=high(YAxis.min);
-    YAxis.max:=low(YAxis.max);
+    YAxis.min:=1e1000;
+    YAxis.max:=-1e1000;
     YAxis.resolution:=1;
   end;
   for i:=0 to DataLists.count-1 do begin
@@ -257,8 +279,22 @@ begin
   valueAreaBottom:=valueAreaY+valueAreaHeight;
   xaxisOldMin:=xaxis.min;
   xaxis.min:=xaxis.min+xaxisMove;
-  if XAxis.auto then autoResolution(XAxis,valueAreaWidth);
-  if YAxis.auto then autoResolution(YAxis,valueAreaHeight);
+  if XAxis.auto then XAxis.autoResolution(valueAreaWidth);
+  if YAxis.auto then YAxis.autoResolution(valueAreaHeight);
+
+end;
+
+function TDiagram.update(xaxisMove: longint=0): TBitmap;
+
+var i,j,pos,textHeightC,legendX:longint;
+    p:float;
+    xaxisOldMin: float;
+    list:TDataList;
+    temp,caption,captionOld:string;
+begin
+
+  textHeightC:=Diagram.Canvas.TextHeight(',gqp´HTMIT');
+  if updateAxisEveryBitmapUpdate then updateAxis(xaxisMove);
   with Diagram.Canvas do begin
     brush.style:=bsSolid;
     brush.color:=backColor;
@@ -276,31 +312,31 @@ begin
     LineTo(valueAreaX-1,valueAreaBottom+1);
     LineTo(valueAreaX+valueAreaWidth,valueAreaBottom+1);
     captionOld:='';
-    i:=XAxis.min;
-    while i<=XAxis.max do begin
-      caption:=XAxis.doTranslate(i);
+    p:=XAxis.min;
+    while p<=XAxis.max do begin
+      caption:=XAxis.doTranslate(p);
       if caption<>captionOld then begin
         captionOld:=caption;
-        pos:=(i-XAxis.min)*valueAreaWidth div (XAxis.max-XAxis.min)+valueAreaX;
+        pos:=round((p-XAxis.min)*valueAreaWidth / (XAxis.max-XAxis.min)+valueAreaX);
         if XAxis.showLine then begin
           pen.color:=XAxis.lineColor;
           MoveTo(pos,valueAreaY);
           LineTo(pos,valueAreaBottom);
           pen.color:=clBlack;
         end;
-        MoveTo(pos,valueAreaBottom-2);
-        LineTo(pos,valueAreaBottom+3);
-        TextOut(pos-textwidth(caption) div 2,valueAreaBottom+4,caption);
+        MoveTo((pos),valueAreaBottom-2);
+        LineTo((pos),valueAreaBottom+3);
+        TextOut((pos)-textwidth(caption) div 2,valueAreaBottom+4,caption);
       end;
-      inc(i,XAxis.resolution);
+      p:=p+XAxis.resolution;
     end;
     pen.color:=clBlack;
-    i:=YAxis.min;
-    while i<=YAxis.max do begin
-      caption:=YAxis.doTranslate(i);
+    p:=YAxis.min;
+    while p<=YAxis.max do begin
+      caption:=YAxis.doTranslate(p);
       if caption<>captionOld then begin
         captionOld:=caption;
-        pos:=valueAreaBottom-(i-YAxis.min)*valueAreaHeight div (YAxis.max-YAxis.min);
+        pos:=round(valueAreaBottom-(p-YAxis.min)*valueAreaHeight / (YAxis.max-YAxis.min));
         if YAxis.showLine then begin
           pen.color:=XAxis.lineColor;
           MoveTo(valueAreaX,pos);
@@ -311,7 +347,7 @@ begin
         LineTo(valueAreaX+2,pos);
       end;
       TextOut(valueAreaX-3-TextWidth(caption),pos-textHeightC div 2, caption);
-      inc(i,YAxis.resolution);
+      p:=p+YAxis.resolution;
     end;
 
     //Draw Values
@@ -319,11 +355,11 @@ begin
       list:=TDataList(DataLists[i]);
       if list.pointCount=0 then continue;
       Pen.Color:=list.Color;
-      MoveTo((list.points[0].x-XAxis.min)*valueAreaWidth div (XAxis.max-XAxis.min)+valueAreaX,
-             valueAreaBottom-(list.points[0].y-YAxis.min)*valueAreaHeight div (YAxis.max-YAxis.min));
+      MoveTo(round((list.points[0].x-XAxis.min)*valueAreaWidth / (XAxis.max-XAxis.min)+valueAreaX),
+             round(valueAreaBottom-(list.points[0].y-YAxis.min)*valueAreaHeight / (YAxis.max-YAxis.min)));
       for j:=0 to list.pointCount-1 do
-        LineTo((list.points[j].x-XAxis.min)*valueAreaWidth div (XAxis.max-XAxis.min)+valueAreaX,
-               valueAreaBottom-(list.points[j].y-YAxis.min)*valueAreaHeight div (YAxis.max-YAxis.min));
+        LineTo(round((list.points[j].x-XAxis.min)*valueAreaWidth / (XAxis.max-XAxis.min)+valueAreaX),
+               round(valueAreaBottom-(list.points[j].y-YAxis.min)*valueAreaHeight / (YAxis.max-YAxis.min)));
     end;
     
 
@@ -347,15 +383,15 @@ begin
     end;
   end;
   
-  xaxis.min:=xaxisOldMin;
+  //xaxis.min:=xaxisOldMin;
   Result:=Diagram;
 end;
 
-function TDiagram.posXToDataX(x: longint): longint;
+function TDiagram.posXToDataX(x: longint): float;
 begin
   //umgekehrt:  (i-XAxis.min)*valueAreaWidth div (XAxis.max-XAxis.min)+valueAreaX
 
-  result:=(x-valueAreaX)*(XAxis.max-XAxis.min) div valueAreaWidth + XAxis.min;
+  result:=round((x-valueAreaX)*(XAxis.max-XAxis.min) / valueAreaWidth + XAxis.min);
 end;
 
 
