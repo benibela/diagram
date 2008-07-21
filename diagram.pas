@@ -260,7 +260,7 @@ begin
   if yaxis.min=1 then yaxis.min:=0;}
   if xaxis.max<=xaxis.min then xaxis.max:=xaxis.min+5;
   if yaxis.max<=yaxis.min then yaxis.max:=yaxis.min+5;
-  textHeightC:=Diagram.Canvas.TextHeight(',gqp´HTMIT');
+  textHeightC:=Diagram.Canvas.TextHeight(',gqpHTMIT');
   if legend.auto then begin
     legend.width:=0;
     for i:=0 to DataLists.count-1 do begin
@@ -293,14 +293,13 @@ var i,j,pos,textHeightC,legendX:longint;
     temp,caption,captionOld:string;
 begin
 
-  textHeightC:=Diagram.Canvas.TextHeight(',gqp´HTMIT');
+  textHeightC:=Diagram.Canvas.TextHeight(',gqpHTMIT');
   if updateAxisEveryBitmapUpdate then updateAxis(xaxisMove);
   with Diagram.Canvas do begin
     brush.style:=bsSolid;
     brush.color:=backColor;
     FillRect(0,0,Diagram.Width,Diagram.Height);
-    brush.color:=dataBackColor;
-    FillRect(valueAreaX,valueAreaY,valueAreaX+valueAreaWidth,valueAreaY+valueAreaHeight);
+    brush.color:=dataBackColor;//eaX+valueAreaWidth,valueAreaY+valueAreaHeight);
     brush.style:=bsSolid;
     brush.color:=dataBackColor;
     FillRect(valueAreaX,valueAreaY,valueAreaX+valueAreaWidth,valueAreaY+valueAreaHeight);
