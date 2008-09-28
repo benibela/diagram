@@ -5,7 +5,7 @@ unit diagram;
 interface
 
 uses
-  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math;
+  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math,FPimage,IntfGraphics,LCLType;
 
 type
   TDiagram=class;
@@ -69,10 +69,13 @@ type
     XAxis,YAxis: TAxis;
     Diagram: TBitmap;
 
+
     backColor: TColor;
     dataBackColor: TColor;
 
     legend:TLegend;
+
+    filled: boolean;
 
     constructor create;
     destructor destroy;override;
@@ -291,6 +294,9 @@ var i,j,pos,textHeightC,legendX:longint;
     xaxisOldMin: float;
     list:TDataList;
     temp,caption,captionOld:string;
+    currentColor,fpbackcolor,fplinecolor:tfpcolor;
+    tempLazImage:TLazIntfImage;
+    bitmap,maskbitmap: HBITMAP;
 begin
 
   textHeightC:=Diagram.Canvas.TextHeight(',gqpHTMIT');
@@ -337,7 +343,7 @@ begin
         captionOld:=caption;
         pos:=round(valueAreaBottom-(p-YAxis.min)*valueAreaHeight / (YAxis.max-YAxis.min));
         if YAxis.showLine then begin
-          pen.color:=XAxis.lineColor;
+          pen.color:=YAxis.lineColor;
           MoveTo(valueAreaX,pos);
           LineTo(valueAreaRight,pos);
           pen.color:=clBlack;
@@ -361,7 +367,29 @@ begin
                round(valueAreaBottom-(list.points[j].y-YAxis.min)*valueAreaHeight / (YAxis.max-YAxis.min)));
     end;
     
+    //fill values
+    //TODO: problem, this overrides y-lines, this could run in dataLines*dataPoints*log dataPoints
+    if filled then begin
+      tempLazImage:=TLazIntfImage.Create(0,0);
+      tempLazImage.LoadFromBitmap(Diagram.Handle,0);
+      fpbackcolor:=TColorToFPColor(dataBackColor);
+      fplinecolor:=TColorToFPColor(XAxis.lineColor);
+      for i:=valueAreaX+3 to valueAreaRight do begin //start after horz-axis-segments
+        currentColor:=fpbackcolor;
+        for j:=valueAreaY to valueAreaBottom do
+          if (tempLazImage.Colors[i,j]<>fplinecolor) then begin
+            if tempLazImage.colors[i,j]=fpbackcolor then
+              tempLazImage.Colors[i,j]:=currentColor
+            else
+              currentColor:=tempLazImage.Colors[i,j];
+          end;
+      end;
+      tempLazImage.CreateBitmaps(bitmap,maskbitmap,true);
+      Diagram.Handle:=bitmap;
+      tempLazImage.Free;
+    end;
 
+    //draw legend
     if legend.visible then begin
       brush.style:=bsSolid;
       brush.Color:=legend.color;
