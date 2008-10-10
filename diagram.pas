@@ -384,6 +384,7 @@ begin
               currentColor:=tempLazImage.Colors[i,j];
           end;
       end;
+
       tempLazImage.CreateBitmaps(bitmap,maskbitmap,true);
       Diagram.Handle:=bitmap;
       tempLazImage.Free;
