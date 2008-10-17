@@ -418,8 +418,8 @@ end;
 function TDiagram.posXToDataX(x: longint): float;
 begin
   //umgekehrt:  (i-XAxis.min)*valueAreaWidth div (XAxis.max-XAxis.min)+valueAreaX
-
-  result:=round((x-valueAreaX)*(XAxis.max-XAxis.min) / valueAreaWidth + XAxis.min);
+  if valueAreaWidth=0 then exit(0);
+   result:=round((x-valueAreaX)*(XAxis.max-XAxis.min) / valueAreaWidth + XAxis.min);
 end;
 
 
