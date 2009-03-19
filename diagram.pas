@@ -10,41 +10,83 @@ uses
 type
   TAxis=class;
   TValueTranslateEvent=procedure (sender: TAxis; i: float; var translated: string) of object;
-  TLegend=record
-    visible: boolean;
-    width,height: longint;
-    color:TCOlor;
-    auto: boolean;
+
+  { TLegend }
+
+  TLegend=class(TPersistent)
+  private
+    Fauto: boolean;
+    FColor: TColor;
+    FHeight: longint;
+    Fvisible: boolean;
+    FWidth: longint;
+    FModifiedEvent: TNotifyEvent;
+    procedure doModified;
+    procedure Setauto(const AValue: boolean);
+    procedure SetColor(const AValue: TColor);
+    procedure SetHeight(const AValue: longint);
+    procedure Setvisible(const AValue: boolean);
+    procedure SetWidth(const AValue: longint);
+  published
+    property visible: boolean read Fvisible write Setvisible ;
+    property Width:longint read FWidth write SetWidth ;
+    property Height: longint read FHeight write SetHeight;
+    property Color:TColor read FColor write SetColor;
+    property auto: boolean read Fauto write Setauto ;
   end;
 
   { TAxis }
 
   TRangePolicy = (rpModelControlled, rpApplicationControlled);
-  TAxis=class
+  TAxis=class(TPersistent)
+  private
+    FGridLinePen: TPen;
+    FLinePen: TPen;
+    Fmax: float;
+    Fmin: float;
+    FModifiedEvent: TNotifyEvent;
+    FrangePolicy: TRangePolicy;
+    Fresolution: float;
+    FvalueTranslate: TValueTranslateEvent;
+    procedure doModified(sender:tobject);
+    procedure SetGridLinePen(const AValue: TPen);
+    procedure SetLinePen(const AValue: TPen);
+    procedure Setmax(const AValue: float);
+    procedure Setmin(const AValue: float);
+    procedure SetrangePolicy(const AValue: TRangePolicy);
+    procedure Setresolution(const AValue: float);
+    procedure SetvalueTranslate(const AValue: TValueTranslateEvent);
   protected
     function doTranslate(const i:float): string;
   public
-    title: string;
-    min,max,resolution: float;
-    rangePolicy: TRangePolicy;
-    valueTranslate: TValueTranslateEvent;
-    showLine: boolean;
-    lineColor: TColor;
-    
+    constructor create();
+    destructor destroy();override;
+
+    //title: string;
+
     function translate(const i:float): string;inline;
     procedure autoResolution(imageSize: longint);
+  published
+    property gridLinePen: TPen read FGridLinePen write SetGridLinePen;
+    property linePen: TPen read FLinePen write SetLinePen;
+    property min: float read Fmin write Setmin;
+    property max: float read Fmax write Setmax;
+    property resolution: float read Fresolution write Setresolution;
+    property rangePolicy: TRangePolicy read FrangePolicy write SetrangePolicy;
+    property valueTranslate: TValueTranslateEvent read FvalueTranslate write SetvalueTranslate;
   end;
   TDataPoint=record
     x,y:float;
   end;
 
-  TDiagramKind=(dkLines);
+  TLineStyle=(lsNone, lsLinear);
+  TPointStyle = (psNone, psPixel, psCircle, psRectangle, psPlus, psCross);
 
   { TAbstractDiagramModel }
 
   {** This is the abstract class you have to implement for custom data
   }
-  TAbstractDiagramModel = class
+  TAbstractDiagramModel = class(TPersistent)
   private
     fmodified: boolean;
     fmodifiedEvent: TNotifyEvent;
@@ -60,8 +102,10 @@ type
     function dataTitle(i:longint):string; virtual;
     //**This setups the canvas (override it to set the color, set pen and brush to the same)
     procedure setupCanvasForData(i:longint; c: TCanvas); virtual;
-    //**This returns the actual data (you must override it)
-    function data(i:longint; const x:float):float; virtual;abstract;
+    //**Returns the count of data points in a given row
+    function dataPoints(i:longint):longint; virtual;abstract;
+    //**This returns the actual data (you must override it), j from 0 to dataPoints(i)-1, the must be in sorted order (x[i]<x[i+1])
+    procedure data(i,j:longint; out x,y:float); virtual;abstract;
 
     //**returns the minimum x (default 0, you should override it)
     function minX(i:longint):float; virtual;
@@ -71,10 +115,9 @@ type
     function minY(i:longint):float; virtual;
     //**returns the maximum value (default scans all values)
     function maxY(i:longint):float; virtual;
-    //**returns the next x where data exists, or maxX+1 if this is the last point
-    //**The default implementation returns x+1, override it if you have non integer x-position
-    //**You can return x for contiguous draw (only x, not e.g. x+0.5-0.5, the binary representation mustn't change)
-    function nextX(i:longint; const x:float):float; virtual;
+
+    function dataX(i,j:longint):float; //**<returns x of point i,j, calls data
+    function dataY(i,j:longint):float; //**<returns y of point i,j, calls data
 
     function minX:float;
     function maxX:float;
@@ -86,22 +129,31 @@ type
 
   { TDiagramDrawer }
 
-  TDiagramDrawer = class
+  TDiagramDrawer = class(TPersistent)
   private
-    FKind: TDiagramKind;
+    FBackColor: TColor;
+    FDataBackColor: TColor;
+    FLayoutModified: Boolean;
+    FLineStyle: TLineStyle;
+    FModifiedEvent: TNotifyEvent;
+    FFilled: boolean;
+    Flegend: TLegend;
     FModel: TAbstractDiagramModel;
     FModelOwnership: boolean;
+    FPointSize: longint;
+    FPointStyle: TPointStyle;
     fvalueAreaX,FValueAreaY,FValueAreaWidth,FValueAreaHeight,FValueAreaRight,FValueAreaBottom: longint;
     FDiagram: TBitmap;
     FXAxis,FYAxis: TAxis;
+    procedure doModified;
+    procedure SetBackColor(const AValue: TColor);
+    procedure SetDataBackColor(const AValue: TColor);
+    procedure SetFilled(const AValue: boolean);
+    procedure SetLineStyle(const AValue: TLineStyle);
     procedure SetModel(const AValue: TAbstractDiagramModel);
+    procedure SetPointSize(const AValue: longint);
+    procedure SetPointStyle(const AValue: TPointStyle);
   public
-    backColor: TColor;
-    dataBackColor: TColor;
-    legend:TLegend;
-
-    filled: boolean;
-
     constructor create;
     function update(): TBitmap;
     destructor destroy;override;
@@ -112,10 +164,18 @@ type
     function posToDataX(x: longint): float;
 
     property Diagram: TBitmap read FDiagram;
+
+  published
+    property legend:TLegend read Flegend;
     property XAxis: TAxis read FXAxis;
     property YAxis: TAxis read FYAxis;
-    property Kind: TDiagramKind read FKind write FKind;
+    property LineStyle: TLineStyle read FLineStyle write SetLineStyle;
+    property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
+    property PointSize: longint read FPointSize write SetPointSize;
+    property Filled: boolean read FFilled write SetFilled;
     property Model: TAbstractDiagramModel read FModel write SetModel;
+    property BackColor: TColor read FBackColor write SetBackColor;
+    property DataBackColor: TColor read FDataBackColor write SetDataBackColor;
   end;
 
 
@@ -126,6 +186,7 @@ type
     FDrawer: TDiagramDrawer;
     FModel: TAbstractDiagramModel;
     procedure modelChanged(sender:Tobject);
+    procedure layoutChanged(sender:Tobject);
     procedure DoOnResize;override;
     procedure SetModel(const AValue: TAbstractDiagramModel);
   public
@@ -133,10 +194,11 @@ type
     destructor destroy;override;
     procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
     procedure paint;override;
+  published
     property Drawer: TDiagramDrawer read FDrawer;
     property Model: TAbstractDiagramModel read FModel write SetModel;
   end;
-//https://ssl.planet-hosting.de/cis.php?sub=domains&act=Edit&Domain=kindesunwohl-brd.de&Ziel=/-kindesunwohl-brd&sid=99d5d798b6d3e2be1ce6b30758a538d3
+
   { TDataList }
 
   TDataList=class
@@ -160,8 +222,7 @@ type
     //**It does use an intelligent growth strategy
     procedure addPoint(y:float); overload;
 
-    function data(const x: float):float; //**<returns the data at position x (O(1) if called in left-to-right order, O(n) if called in right-to-left order)
-    function nextX(const x: float):float; //**<returns the position of the next data point (O(1) if called in left-to-right order , O(n) if called in right-to-left order)
+    procedure data(i:longint; out x,y: float); //**<returns the data at position i
   end;
 
   { TDiagramDataListModel }
@@ -186,10 +247,10 @@ type
     function dataTitle(i:longint):string; override;
     //**This set the color to the data list color
     procedure setupCanvasForData(i:longint; c: TCanvas); override;
+    //**This returns the number of data points in a given lists
+    function dataPoints(i:longint): longint; override;
     //**This returns the actual data (amortized O(1) if called in correct order)
-    function data(i:longint; const x:float):float; override;
-    //**returns the next x where data exists (amortized O(1) if called in correct order)
-    function nextX(i:longint; const x:float):float; override;
+    procedure data(i,j:longint; out x,y:float); override;
 
     //**returns the minimum x
     function minX(i:longint):float; override;overload;
@@ -200,11 +261,68 @@ type
     //**returns the maximum value (O(1))
     function maxY(i:longint):float; override;overload;
 
+
     property lists[i:Integer]: TDataList read getDataList; default;
   end;
 implementation
 const PInfinity=Infinity;
       MInfinity=NegInfinity;
+
+procedure TAxis.doModified(sender:tobject);
+begin
+  if assigned(FModifiedEvent) then FModifiedEvent(self);
+end;
+
+procedure TAxis.SetGridLinePen(const AValue: TPen);
+begin
+  if FGridLinePen=AValue then exit;
+  FGridLinePen.Assign(AValue);
+  domodified(self);
+end;
+
+procedure TAxis.SetLinePen(const AValue: TPen);
+begin
+  if FLinePen=AValue then exit;
+  FLinePen.Assign(AValue);
+  domodified(self);
+end;
+
+procedure TAxis.Setmax(const AValue: float);
+begin
+  if Fmax=AValue then exit;
+  Fmax:=AValue;
+  doModified(self);
+end;
+
+procedure TAxis.Setmin(const AValue: float);
+begin
+  if Fmin=AValue then exit;
+  Fmin:=AValue;
+  doModified(self);
+end;
+
+procedure TAxis.SetrangePolicy(const AValue: TRangePolicy);
+begin
+  if FrangePolicy=AValue then exit;
+  FrangePolicy:=AValue;
+  doModified(self);
+end;
+
+procedure TAxis.Setresolution(const AValue: float);
+begin
+  if AValue<=0 then exit;
+  if Fresolution=AValue then exit;
+  Fresolution:=AValue;
+  doModified(self);
+end;
+
+procedure TAxis.SetvalueTranslate(const AValue: TValueTranslateEvent);
+begin
+  if FvalueTranslate=AValue then exit;
+  FvalueTranslate:=AValue;
+  doModified(self);
+end;
+
 function TAxis.doTranslate(const i:float): string;
 begin
   if frac(i)<1e-16 then result:=inttostr(round(i))
@@ -212,6 +330,19 @@ begin
   else result:=format('%.2g',[i]);
   if assigned(valueTranslate) then
     valueTranslate(self,i,result);
+end;
+
+constructor TAxis.create();
+begin
+  FGridLinePen:=TPen.Create;
+  FLinePen:=TPen.Create;
+  FGridLinePen.OnChange:=@doModified;
+  FLinePen.OnChange:=@doModified;
+end;
+
+destructor TAxis.destroy();
+begin
+  inherited destroy();
 end;
 
 function TAxis.translate(const i: float): string;inline;
@@ -247,37 +378,17 @@ begin
 
 end;
 
-function TDataList.data(const x: float): float;
-var i:longint;
+procedure TDataList.data(i: longint; out x, y: float);
 begin
-  if pointCount=0 then result:=maxX+1;
-  if (lastRead>=0) and (lastRead<pointCount) then
-    if points[lastRead].x = x then exit(points[lastRead].y);
-  for i:=0 to high(points) do
-    if points[i].x=x then begin
-      lastRead:=i;
-      exit(points[i].y);
-    end;
-  exit(NaN);
+  if (i<0) or (i>=pointCount) then begin
+    x:=nan;
+    y:=nan;
+    exit;
+  end;
+  x:=points[i].x;
+  y:=points[i].y;
 end;
 
-function TDataList.nextX(const x: float): float;
-var i:longint;
-begin
-  if pointCount=0 then result:=maxX+1;
-  if (lastRead>=0) and (lastRead<pointCount) then
-    if points[LastRead].x = x then begin
-      lastRead+=1;
-      if lastRead<pointCount then exit(points[lastRead].x)
-      else exit(maxX+1);
-    end;
-  for i:=0 to high(points)-1 do
-    if points[i].x=x then begin
-      lastRead:=i+1;
-      exit(points[i+1].x);
-    end;
-  exit(maxX+1);
-end;
 
 constructor TDataList.create(aowner: TAbstractDiagramModel; acolor: TColor);
 begin
@@ -360,24 +471,76 @@ begin
   SetModel(AValue,false);
 end;
 
+procedure TDiagramDrawer.SetPointSize(const AValue: longint);
+begin
+  if FPointSize=AValue then exit;
+  FPointSize:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetPointStyle(const AValue: TPointStyle);
+begin
+  if FPointStyle=AValue then exit;
+  FPointStyle:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.doModified;
+begin
+  FLayoutModified:=true;
+  if Assigned(FModifiedEvent) then FModifiedEvent(self);
+end;
+
+procedure TDiagramDrawer.SetBackColor(const AValue: TColor);
+begin
+  if FBackColor=AValue then exit;
+  FBackColor:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetDataBackColor(const AValue: TColor);
+begin
+  if FDataBackColor=AValue then exit;
+  FDataBackColor:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetFilled(const AValue: boolean);
+begin
+  if FFilled=AValue then exit;
+  FFilled:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetLineStyle(const AValue: TLineStyle);
+begin
+  if FLineStyle=AValue then exit;
+  FLineStyle:=AValue;
+  doModified;
+end;
+
 constructor TDiagramDrawer.create;
 begin
   FXAxis:=TAxis.Create;
   FYAxis:=TAxis.Create;
   FXAxis.rangePolicy:=rpModelControlled;
   FYAxis.rangePolicy:=rpModelControlled;
-  FXAxis.showLine:=false;
-  FYAxis.showLine:=true;
-  FXAxis.lineColor:=clGray;
-  FYAxis.lineColor:=clGray;
+  FXAxis.gridLinePen.Style:=psClear;
+  FXAxis.gridLinePen.Color:=clGray;
+  FYAxis.gridLinepen.Color:=clGray;
+  FXAxis.linePen.Color:=clBlack;
+  FYAxis.linepen.Color:=clBlack;
   FDiagram:=TBitmap.Create;
   FDiagram.width:=300;
   FDiagram.height:=300;
-  backColor:=clBtnFace;
-  dataBackColor:=clSilver;
-  legend.auto:=true;
-  legend.visible:=true;
-  legend.color:=clBtnFace;
+  fbackColor:=clBtnFace;
+  fdataBackColor:=clSilver;
+  flegend:=TLegend.Create;
+  flegend.auto:=true;
+  flegend.visible:=true;
+  flegend.color:=clBtnFace;
+  fLineStyle:=lsLinear;
+  FPointSize:=3;
 end;
 
 destructor TDiagramDrawer.destroy;
@@ -385,6 +548,7 @@ begin
   FXAxis.free;
   FYAxis.free;
   FDiagram.free;
+  legend.free;
   SetModel(nil);
   inherited;
 end;
@@ -403,18 +567,64 @@ end;
 
 
 function TDiagramDrawer.update(): TBitmap;
+var xstart,ystart,xfactor,yfactor,xend,yend: float; //copied from axis
+
+  procedure translate(const x,y:float; out px,py:longint);inline;
+  begin
+    px:=FValueAreaX+round((x-xstart)*xfactor);
+    py:=FValueAreaBottom-round((y-ystart)*yfactor);
+  end;
+  procedure getRPos(const i,j:longint; out px,py:longint);inline;
+  var x,y:float;
+  begin
+    FModel.data(i,j,x,y);
+    translate(x,y,px,py);
+  end;
+
+var
+    canvas: TCanvas;
+
+  procedure drawLinearLines(id:longint);
+  var i,x,y:longint;
+  begin
+    getRPos(id,0,x,y);
+    canvas.MoveTo(x,y);
+    for i:=1 to fModel.dataPoints(id)-1 do begin
+      getRPos(id,i,x,y);
+      canvas.LineTo(x,y);
+    end;
+  end;
+  procedure drawPoints(id: longint);
+  var i:longint;
+      x,y: longint;
+  begin
+    for i:=0 to fModel.dataPoints(id)-1 do begin
+      getRPos(id,i,x,y);
+      case PointStyle of
+        psPixel: Canvas.Pixels[x,y]:=canvas.Pen.Color;
+        psCircle: canvas.EllipseC(x,y,pointSize,pointSize);
+        psRectangle: canvas.Rectangle(x-PointSize,y-PointSize,x+pointSize,y+pointSize);
+        psPlus: begin
+          canvas.Line(x-PointSize,y,x+PointSize+1,y);
+          canvas.Line(x,y-PointSize,x,y+PointSize+1);
+        end;
+        psCross: begin
+          canvas.Line(x-PointSize,y-PointSize,x+PointSize+1,y+PointSize+1);
+          canvas.Line(x+PointSize,y-PointSize,x-PointSize-1,y+PointSize+1);
+        end;
+      end;
+    end;
+  end;
 
 var i,j,pos,textHeightC,legendX:longint;
     p:float;
-    maxx,x,nextX: float;
-    xstart,ystart,xfactor,xfactorinv, yfactor,xend,yend: float; //copied from axis
-    drawx:longint;
     caption,captionOld:string;
     currentColor,fpbackcolor,fplinecolor:tfpcolor;
     tempLazImage:TLazIntfImage;
     bitmap,maskbitmap: HBITMAP;
 begin
   result:=Diagram;
+  canvas:=result.canvas;
   if not assigned(FMOdel) then exit;
 
   textHeightC:=result.Canvas.TextHeight(',gqpHTMIT');
@@ -426,7 +636,7 @@ begin
       if j>legend.width then legend.width:=j;
     end;
     legend.width:=legend.width+20;
-    legend.height:=(textHeightC+5)*FModel.dataCount()+10;
+    legend.height:=(textHeightC+5)*FModel.dataCount()+5;
   end;
   //setup output area
   FValueAreaX:=20;
@@ -470,11 +680,11 @@ begin
       if caption<>captionOld then begin
         captionOld:=caption;
         pos:=FValueAreaX+round((p-xstart)*xfactor);
-        if XAxis.showLine then begin
-          pen.color:=XAxis.lineColor;
+        if XAxis.gridLinePen.Style<>psClear then begin
+          pen:=XAxis.gridLinePen;
           MoveTo(pos,FValueAreaY);
           LineTo(pos,FValueAreaBottom);
-          pen.color:=clBlack;
+          pen:=XAxis.linePen;
         end;
         MoveTo((pos),FValueAreaBottom-2);
         LineTo((pos),FValueAreaBottom+3);
@@ -501,11 +711,11 @@ begin
       if caption<>captionOld then begin
         captionOld:=caption;
         pos:=FValueAreaBottom-round((p-ystart)*yfactor);
-        if YAxis.showLine then begin
-          pen.color:=YAxis.lineColor;
+        if YAxis.gridLinePen.Style<>psClear then begin
+          pen:=YAxis.gridLinePen;
           MoveTo(FValueAreaX,pos);
           LineTo(FValueAreaRight,pos);
-          pen.color:=clBlack;
+          pen:=YAxis.linePen;
         end;
         MoveTo(FValueAreaX-3,pos);
         LineTo(FValueAreaX+2,pos);
@@ -516,26 +726,13 @@ begin
     end;
 
     //Draw Values
-    if xfactor<>0 then xfactorinv:=1/xfactor
-    else xfactorinv:=1;
     for i:=0 to FModel.dataCount-1 do begin
-      x:=FModel.minX(i);
-      maxx:=FModel.maxX(i);
-      if (maxx<x) or IsNan(x) or IsInfinite(x) or IsNan(maxx) or IsInfinite(maxx) then continue;
-      FModel.setupCanvasForData(i,result.canvas);
-      MoveTo(FValueAreaX+round((x-xstart)*xfactor),
-             FValueAreaBottom-round((FModel.data(i,x)-ystart)*yfactor));
-      x:=FModel.nextX(i,x);
-      while x<=maxx do begin
-        drawx:=FValueAreaX+round((x-xstart)*xfactor);
-        LineTo( drawx,
-                FValueAreaBottom-round((FModel.data(i,x)-ystart)*yfactor));
-        nextX:=FModel.nextX(i,x);
-        if x=nextX then //one pixel further
-          x:=(drawx+1) *xfactorinv + xstart
-         else
-          x:=nextx;
+      if fModel.dataPoints(i)=0 then continue;
+      FModel.setupCanvasForData(i,canvas);
+      case LineStyle of
+        lsLinear: drawLinearLines(i);
       end;
+      if PointStyle<>psNone then drawPoints(i);
     end;
 
     //fill values
@@ -544,7 +741,8 @@ begin
       tempLazImage:=TLazIntfImage.Create(0,0);
       tempLazImage.LoadFromBitmap(result.Handle,0);
       fpbackcolor:=TColorToFPColor(dataBackColor);
-      fplinecolor:=TColorToFPColor(XAxis.lineColor);
+      if YAxis.gridLinePen.Style<>psClear then fplinecolor:=TColorToFPColor(YAxis.gridLinePen.Color)
+      else fplinecolor:=TColorToFPColor(clNone);
       for i:=FValueAreaX+3 to FValueAreaRight do begin //start after horz-axis-segments
         currentColor:=fpbackcolor;
         for j:=FValueAreaY to FValueAreaBottom do
@@ -645,47 +843,42 @@ end;
 
 function TAbstractDiagramModel.minX(i: longint): float;
 begin
-  result:=0;
+  if dataPoints(i)>0 then result:=dataX(i,0)
+  else result:=0;
 end;
 
 function TAbstractDiagramModel.maxX(i: longint): float;
 begin
-  result:=100;
+  if dataPoints(i)>0 then result:=dataX(i,dataPoints(i)-1)
+  else result:=0;
 end;
 
 function TAbstractDiagramModel.minY(i: longint): float;
-var x,m,nx:float;
+var j:longint;
 begin
   result:=PInfinity;
-  x:=minX(i);
-  m:=maxX(i);
-  if IsNan(x) or IsInfinite(x) or IsNan(m) or IsInfinite(m) then exit;
-  while x<=m do begin
-    result:=min(x,data(i,x));
-    nx:=nextx(i,x);
-    if nx=x then x:=x+0.1
-    else x:=nx;
-  end;
+  for j:=0 to dataPoints(i)-1 do
+    result:=min(result,dataY(i,j));
 end;
 
 function TAbstractDiagramModel.maxY(i: longint): float;
-var x,m,nx:float;
+var j:longint;
 begin
-  result:=-1e1000;
-  x:=minX(i);
-  m:=maxX(i);
-  if IsNan(x) or IsInfinite(x) or IsNan(m) or IsInfinite(m) then exit;
-  while x<=m do begin
-    result:=max(x,data(i,x));
-    nx:=nextx(i,x);
-    if nx=x then x:=x+0.1
-    else x:=nx;
-  end;
+  result:=PInfinity;
+  for j:=0 to dataPoints(i)-1 do
+    result:=max(result,dataY(i,j));
 end;
 
-function TAbstractDiagramModel.nextX(i: longint; const x: float): float;
+function TAbstractDiagramModel.dataX(i, j: longint): float;
+var t:float;
 begin
-  result:=x+1;
+  data(i,j,result,t);
+end;
+
+function TAbstractDiagramModel.dataY(i, j: longint): float;
+var t:float;
+begin
+  data(i,j,result,t);
 end;
 
 function TAbstractDiagramModel.minX: float;
@@ -787,10 +980,19 @@ begin
   end;
 end;
 
-function TDiagramDataListModel.data(i: longint; const x: float): float;
+function TDiagramDataListModel.dataPoints(i: longint): longint;
 begin
-  if (i>=0) and (i<FLists.Count) then result:=lists[i].data(x)
-  else result:=nan;
+  if (i>=0) and (i<FLists.Count) then result:=lists[i].pointCount
+  else result:=0;
+end;
+
+procedure TDiagramDataListModel.data(i, j: longint; out x, y: float);
+begin
+  if (i>=0) and (i<FLists.Count) then lists[i].data(j,x,y)
+  else begin
+    x:=nan;
+    y:=nan;
+  end;
 end;
 
 function TDiagramDataListModel.minX(i: longint): float;
@@ -817,16 +1019,16 @@ begin
   else exit(NaN);
 end;
 
-function TDiagramDataListModel.nextX(i: longint; const x: float): float;
-begin
-  if (i>=0) and (i<FLists.Count) then result:=lists[i].nextX(x)
-  else result:=maxX()+1;
-end;
-
 { TDiagramView }
 
 procedure TDiagramView.modelChanged(sender:Tobject);
 begin
+  Invalidate;
+end;
+
+procedure TDiagramView.layoutChanged(sender: Tobject);
+begin
+  FDrawer.FLayoutModified:=true;
   Invalidate;
 end;
 
@@ -849,6 +1051,10 @@ begin
   FDrawer:=TDiagramDrawer.create;
   FDrawer.Diagram.width:=Width;
   FDrawer.Diagram.height:=height;
+  FDrawer.XAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.YAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.legend.FModifiedEvent:=@layoutChanged;
+  FDrawer.FModifiedEvent:=@layoutChanged;
 end;
 
 destructor TDiagramView.destroy;
@@ -872,10 +1078,53 @@ end;
 procedure TDiagramView.paint;
 begin
   if not assigned(FDrawer.FModel) then exit;
-  if FModel.fmodified then
+  if FModel.fmodified or FDrawer.FLayoutModified then
     FDrawer.update();
   canvas.Draw(0,0,FDrawer.Diagram);
   FModel.fmodified:=false;
+  FDrawer.FLayoutModified:=false;
+end;
+
+{ TLegend }
+
+procedure TLegend.Setvisible(const AValue: boolean);
+begin
+  if Fvisible=AValue then exit;
+  Fvisible:=AValue;
+  domodified;
+end;
+
+procedure TLegend.doModified;
+begin
+  if assigned(FModifiedEvent) then FModifiedEvent(self);
+end;
+
+procedure TLegend.Setauto(const AValue: boolean);
+begin
+  if Fauto=AValue then exit;
+  Fauto:=AValue;
+  doModified;
+end;
+
+procedure TLegend.SetColor(const AValue: TColor);
+begin
+  if FColor=AValue then exit;
+  FColor:=AValue;
+  doModified;
+end;
+
+procedure TLegend.SetHeight(const AValue: longint);
+begin
+  if FHeight=AValue then exit;
+  FHeight:=AValue;
+  doModified;
+end;
+
+procedure TLegend.SetWidth(const AValue: longint);
+begin
+  if FWidth=AValue then exit;
+  FWidth:=AValue;
+  doModified;
 end;
 
 end.
