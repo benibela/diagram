@@ -37,7 +37,7 @@ type
 
   { TAxis }
 
-  TRangePolicy = (rpModelControlled, rpApplicationControlled);
+  TRangePolicy = (rpAuto, rpApplication);
   TAxis=class(TPersistent)
   private
     FGridLinePen: TPen;
@@ -47,15 +47,20 @@ type
     FModifiedEvent: TNotifyEvent;
     FrangePolicy: TRangePolicy;
     Fresolution: float;
+    FShowText: boolean;
     FvalueTranslate: TValueTranslateEvent;
+    FVisible: boolean;
     procedure doModified(sender:tobject);
+
     procedure SetGridLinePen(const AValue: TPen);
     procedure SetLinePen(const AValue: TPen);
     procedure Setmax(const AValue: float);
     procedure Setmin(const AValue: float);
     procedure SetrangePolicy(const AValue: TRangePolicy);
     procedure Setresolution(const AValue: float);
+    procedure SetShowText(const AValue: boolean);
     procedure SetvalueTranslate(const AValue: TValueTranslateEvent);
+    procedure SetVisible(const AValue: boolean);
   protected
     function doTranslate(const i:float): string;
   public
@@ -65,7 +70,7 @@ type
     //title: string;
 
     function translate(const i:float): string;inline;
-    procedure autoResolution(imageSize: longint);
+    procedure rangeChanged(const rmin,rmax:float; realSize: longint);
   published
     property gridLinePen: TPen read FGridLinePen write SetGridLinePen;
     property linePen: TPen read FLinePen write SetLinePen;
@@ -74,6 +79,8 @@ type
     property resolution: float read Fresolution write Setresolution;
     property rangePolicy: TRangePolicy read FrangePolicy write SetrangePolicy;
     property valueTranslate: TValueTranslateEvent read FvalueTranslate write SetvalueTranslate;
+    property Visible:boolean read FVisible write SetVisible;
+    property ShowText:boolean read FShowText write SetShowText;
   end;
   TDataPoint=record
     x,y:float;
@@ -93,9 +100,6 @@ type
   protected
     procedure modified; //**<Call when ever the model data has been changed
   public
-    //**This setups the axis for a given size (it uses a reasonable default)
-    procedure setupAxis(xAxis, yAxis: TAxis; areaWidth, areaHeight: longint);virtual;
-
     //**This returns the number of data rows (override if you use more than 1)
     function dataCount: longint; virtual;
     //**This returns the title of every data row for the legend
@@ -131,6 +135,8 @@ type
 
   TDiagramDrawer = class(TPersistent)
   private
+    FAutoSetRangeX: boolean;
+    FAutoSetRangeY: boolean;
     FBackColor: TColor;
     FDataBackColor: TColor;
     FLayoutModified: Boolean;
@@ -142,10 +148,16 @@ type
     FModelOwnership: boolean;
     FPointSize: longint;
     FPointStyle: TPointStyle;
+    FRangeMaxX: float;
+    FRangeMaxY: float;
+    FRangeMinX: float;
+    FRangeMinY: float;
     fvalueAreaX,FValueAreaY,FValueAreaWidth,FValueAreaHeight,FValueAreaRight,FValueAreaBottom: longint;
     FDiagram: TBitmap;
-    FXAxis,FYAxis: TAxis;
+    FLAxis,FYMAxis,FRAxis, FTAxis,FXMAxis,FBAxis: TAxis;
     procedure doModified;
+    procedure SetAutoSetRangeX(const AValue: boolean);
+    procedure SetAutoSetRangeY(const AValue: boolean);
     procedure SetBackColor(const AValue: TColor);
     procedure SetDataBackColor(const AValue: TColor);
     procedure SetFilled(const AValue: boolean);
@@ -153,6 +165,10 @@ type
     procedure SetModel(const AValue: TAbstractDiagramModel);
     procedure SetPointSize(const AValue: longint);
     procedure SetPointStyle(const AValue: TPointStyle);
+    procedure SetRangeMaxX(const AValue: float);
+    procedure SetRangeMaxY(const AValue: float);
+    procedure SetRangeMinX(const AValue: float);
+    procedure SetRangeMinY(const AValue: float);
   public
     constructor create;
     function update(): TBitmap;
@@ -166,9 +182,19 @@ type
     property Diagram: TBitmap read FDiagram;
 
   published
+    property RangeMinX: float read FRangeMinX write SetRangeMinX;
+    property RangeMaxX: float read FRangeMaxX write SetRangeMaxX;
+    property RangeMinY: float read FRangeMinY write SetRangeMinY;
+    property RangeMaxY: float read FRangeMaxY write SetRangeMaxY;
+    property AutoSetRangeX: boolean read FAutoSetRangeX write SetAutoSetRangeX;
+    property AutoSetRangeY: boolean read FAutoSetRangeY write SetAutoSetRangeY;
     property legend:TLegend read Flegend;
-    property XAxis: TAxis read FXAxis;
-    property YAxis: TAxis read FYAxis;
+    property LeftAxis: TAxis read FLAxis;
+    property RightAxis: TAxis read FRAxis;
+    property TopAxis: TAxis read FTAxis;
+    property BottomAxis: TAxis read FBAxis;
+    property HorzMidAxis: TAxis read FXMAxis;
+    property VertMidAxis: TAxis read FYMAxis;
     property LineStyle: TLineStyle read FLineStyle write SetLineStyle;
     property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
     property PointSize: longint read FPointSize write SetPointSize;
@@ -316,10 +342,24 @@ begin
   doModified(self);
 end;
 
+procedure TAxis.SetShowText(const AValue: boolean);
+begin
+  if FShowText=AValue then exit;
+  FShowText:=AValue;
+  doModified(self);
+end;
+
 procedure TAxis.SetvalueTranslate(const AValue: TValueTranslateEvent);
 begin
   if FvalueTranslate=AValue then exit;
   FvalueTranslate:=AValue;
+  doModified(self);
+end;
+
+procedure TAxis.SetVisible(const AValue: boolean);
+begin
+  if FVisible=AValue then exit;
+  FVisible:=AValue;
   doModified(self);
 end;
 
@@ -350,7 +390,7 @@ begin
   result:=doTranslate(i);
 end;
 
-procedure TAxis.autoResolution(imageSize: longint);
+procedure TAxis.rangeChanged(const rmin,rmax:float; realSize: longint);
 begin
     {if max-min<imageSize then begin
       case imageSize div (max-min) of
@@ -367,14 +407,16 @@ begin
     end;}
     //Count of intervals: (max-min) / resolution
     //Size   "     "    : imageSize / Count
-    if IsInfinite(min) or IsInfinite(max) or IsNan(min) or IsNan(max) then begin
+    if IsInfinite(rmin) or IsInfinite(rmax) or IsNan(rmin) or IsNan(rmax) then begin
       resolution:=NaN;
       exit;
     end;
+    min:=rmin;
+    max:=rmax;
     if abs(max-min)<1e-16 then resolution:=1
-    else if imageSize / (max-min)>20 then resolution:=1
-    else if imageSize / (max-min)>0 then resolution:=(max-min)*30 / imageSize
-    else resolution:=(max-min)*30 / imageSize;
+    else if realSize / (max-min)>20 then resolution:=1
+    else if realSize / (max-min)>0 then resolution:=(max-min)*30 / realSize
+    else resolution:=(max-min)*30 / realSize;
 
 end;
 
@@ -485,11 +527,56 @@ begin
   doModified;
 end;
 
+procedure TDiagramDrawer.SetRangeMaxX(const AValue: float);
+begin
+  if FRangeMaxX=AValue then exit;
+  FRangeMaxX:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetRangeMaxY(const AValue: float);
+begin
+  if FRangeMaxY=AValue then exit;
+  FRangeMaxY:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetRangeMinX(const AValue: float);
+begin
+  if FRangeMinX=AValue then exit;
+  FRangeMinX:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetRangeMinY(const AValue: float);
+begin
+  if FRangeMinY=AValue then exit;
+  FRangeMinY:=AValue;
+  doModified;
+end;
+
 procedure TDiagramDrawer.doModified;
 begin
   FLayoutModified:=true;
   if Assigned(FModifiedEvent) then FModifiedEvent(self);
 end;
+
+procedure TDiagramDrawer.SetAutoSetRangeX(const AValue: boolean);
+begin
+  if FAutoSetRangeX=AValue then exit;
+  FAutoSetRangeX:=AValue;
+  if assigned(fmodel) then fmodel.fmodified:=true;  //cause full update
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetAutoSetRangeY(const AValue: boolean);
+begin
+  if FAutoSetRangeY=AValue then exit;
+  FAutoSetRangeY:=AValue;
+  if assigned(fmodel) then fmodel.fmodified:=true;  //cause full update
+  doModified;
+end;
+
 
 procedure TDiagramDrawer.SetBackColor(const AValue: TColor);
 begin
@@ -521,15 +608,30 @@ end;
 
 constructor TDiagramDrawer.create;
 begin
-  FXAxis:=TAxis.Create;
-  FYAxis:=TAxis.Create;
-  FXAxis.rangePolicy:=rpModelControlled;
-  FYAxis.rangePolicy:=rpModelControlled;
-  FXAxis.gridLinePen.Style:=psClear;
-  FXAxis.gridLinePen.Color:=clGray;
-  FYAxis.gridLinepen.Color:=clGray;
-  FXAxis.linePen.Color:=clBlack;
-  FYAxis.linepen.Color:=clBlack;
+  FLAxis:=TAxis.Create;
+  FBAxis:=TAxis.Create;
+  FLAxis.rangePolicy:=rpAuto;
+  FBAxis.rangePolicy:=rpAuto;
+  FBAxis.gridLinePen.Style:=psClear;
+  FLAxis.gridLinePen.Color:=clGray;
+  FBAxis.gridLinepen.Color:=clGray;
+  FLAxis.linePen.Color:=clBlack;
+  FBAxis.linepen.Color:=clBlack;
+  FLAxis.Visible:=true;
+  FBAxis.Visible:=true;
+
+  FRAxis:=TAxis.create;
+  FRAxis.gridLinePen.Style:=psClear;
+  FRAxis.Visible:=false;
+  FTAxis:=TAxis.create;
+  FTAxis.gridLinePen.Style:=psClear;
+  FTAxis.Visible:=false;
+  FXMAxis:=TAxis.create;
+  FXMAxis.gridLinePen.Style:=psClear;
+  FXMAxis.Visible:=false;
+  FYMAxis:=TAxis.create;
+  FYMAxis.gridLinePen.Style:=psClear;
+  FYMAxis.Visible:=false;
   FDiagram:=TBitmap.Create;
   FDiagram.width:=300;
   FDiagram.height:=300;
@@ -541,12 +643,22 @@ begin
   flegend.color:=clBtnFace;
   fLineStyle:=lsLinear;
   FPointSize:=3;
+  fRangeMinX:=0;
+  fRangeMaxX:=100;
+  fRangeMinY:=0;
+  fRangeMaxY:=100;
+  FAutoSetRangeX:=true;
+  FAutoSetRangeY:=true;
 end;
 
 destructor TDiagramDrawer.destroy;
 begin
-  FXAxis.free;
-  FYAxis.free;
+  FRAxis.free;
+  FTAxis.free;
+  FXMAxis.free;
+  FYMAxis.free;
+  FLAxis.free;
+  FBAxis.free;
   FDiagram.free;
   legend.free;
   SetModel(nil);
@@ -567,7 +679,10 @@ end;
 
 
 function TDiagramDrawer.update(): TBitmap;
-var xstart,ystart,xfactor,yfactor,xend,yend: float; //copied from axis
+const AXIS_SIZE=20;
+      AXIS_DASH_SIZE=2;
+var xstart,ystart,xfactor,yfactor,xend,yend: float; //copied ranges
+    textHeightC:longint;
 
   procedure translate(const x,y:float; out px,py:longint);inline;
   begin
@@ -594,6 +709,7 @@ var
       canvas.LineTo(x,y);
     end;
   end;
+
   procedure drawPoints(id: longint);
   var i:longint;
       x,y: longint;
@@ -616,9 +732,79 @@ var
     end;
   end;
 
-var i,j,pos,textHeightC,legendX:longint;
-    p:float;
-    caption,captionOld:string;
+//----------------------------Axis drawing----------------------------
+  procedure drawHorzAxis(axis: TAxis; posY: longint; textOverAxis: boolean);
+  var p,res: float;
+      caption, captionOld: string;
+      pos:longint;
+  begin
+    captionOld:='';
+    canvas.pen:=axis.linePen;
+    canvas.MoveTo(FValueAreaX,posY);
+    canvas.LineTo(FValueAreaRight,posY);
+    res:=axis.resolution;
+    if IsNan(res) or IsInfinite(res)or(res<=0) then
+      res:=round((xend-xstart) / 10);
+    p:=xstart;
+    while p<=xend do begin
+      caption:=axis.doTranslate(p);
+      if caption<>captionOld then begin
+        captionOld:=caption;
+        pos:=FValueAreaX+round((p-xstart)*xfactor);
+        if axis.gridLinePen.Style<>psClear then begin
+          canvas.pen:=axis.gridLinePen;
+          canvas.MoveTo(pos,FValueAreaY);
+          canvas.LineTo(pos,FValueAreaBottom);
+          canvas.pen:=axis.linePen;
+        end;
+        canvas.MoveTo(pos,posY-AXIS_DASH_SIZE);
+        canvas.LineTo(pos,posY+AXIS_DASH_SIZE+1);
+        if textOverAxis then
+          canvas.TextOut(pos-canvas.textwidth(caption) div 2,posY-AXIS_DASH_SIZE-textHeightC-2,caption)
+         else
+          canvas.TextOut(pos-canvas.textwidth(caption) div 2,posY+AXIS_DASH_SIZE+2,caption);
+      end;
+      p+=res;
+    end;
+  end;
+
+  procedure drawVertAxis(axis: TAxis; posX: longint; textLeftFromAxis: boolean);
+  var p,res: float;
+      caption, captionOld: string;
+      pos:longint;
+  begin
+    captionOld:='';
+    canvas.pen:=axis.linePen;
+    canvas.MoveTo(posX,FValueAreaY);
+    canvas.LineTo(posX,FValueAreaBottom);
+    res:=axis.resolution;
+    if IsNan(res) or IsInfinite(res)or(res<=0) then
+      res:=round((xend-xstart) / 10);
+    p:=ystart;
+    while p<=yend do begin
+      caption:=axis.doTranslate(p);
+      if caption<>captionOld then begin
+        captionOld:=caption;
+        pos:=FValueAreaY+round((p-ystart)*yfactor);
+        if axis.gridLinePen.Style<>psClear then begin
+          canvas.pen:=axis.gridLinePen;
+          canvas.MoveTo(fvalueAreaX,pos);
+          canvas.LineTo(FValueAreaRight,pos);
+          canvas.pen:=axis.linePen;
+        end;
+        canvas.MoveTo(posX-AXIS_DASH_SIZE,pos);
+        canvas.LineTo(posX+AXIS_DASH_SIZE+1,pos);
+        if textLeftFromAxis then
+          canvas.TextOut(posX-AXIS_DASH_SIZE-2-canvas.textwidth(caption),pos-textHeightC div 2,caption)
+         else
+          canvas.TextOut(posX+AXIS_DASH_SIZE+2,pos-textHeightC div 2,caption);
+      end;
+      p+=res;
+    end;
+  end;
+
+var i,j,pos,legendX:longint;
+
     currentColor,fpbackcolor,fplinecolor:tfpcolor;
     tempLazImage:TLazIntfImage;
     bitmap,maskbitmap: HBITMAP;
@@ -639,15 +825,48 @@ begin
     legend.height:=(textHeightC+5)*FModel.dataCount()+5;
   end;
   //setup output area
-  FValueAreaX:=20;
-  FValueAreaY:=5;
-  FValueAreaWidth:=result.Width-FValueAreaX;
-  if legend.visible then dec(FValueAreaWidth,6+legend.width);
-  FValueAreaHeight:=result.Height-25;
-  FValueAreaRight:=FValueAreaX+FValueAreaWidth;
-  FValueAreaBottom:=FValueAreaY+FValueAreaHeight;
-  //setup axis
-  FModel.setupAxis(XAxis,YAxis, FValueAreaWidth, FValueAreaHeight);
+  FValueAreaX:=3;
+  FValueAreaY:=3;
+  if FLAxis.Visible then FValueAreaX+=AXIS_SIZE;
+  if FTAxis.Visible then FValueAreaY+=AXIS_SIZE;
+  FValueAreaRight:=result.Width-3;
+  FValueAreaBottom:=result.Height-3;
+  if legend.visible then FValueAreaRight-=3+legend.width;
+  if FBAxis.Visible then FValueAreaBottom-=AXIS_SIZE;
+  if FRAxis.Visible then FValueAreaRight-=AXIS_SIZE;
+  if (FLAxis.Visible or FRAxis.Visible) and not (FTAxis.Visible) then //don't truncate last text line
+    FValueAreaY+=textHeightC div 2;
+  if (FLAxis.Visible or FRAxis.Visible) and not (FBAxis.Visible) then
+    FValueAreaBottom-=textHeightC div 2;
+
+  FValueAreaWidth:=FValueAreaRight- FValueAreaX;
+  FValueAreaHeight:=FValueAreaBottom-FValueAreaY;
+  //setup ranges
+  if FAutoSetRangeX then
+    if fmodel.dataCount>0 then begin
+      FRangeMinX:=fmodel.minX;
+      FRangeMaxX:=fmodel.maxX;
+      if FRangeMaxX<=FRangeMinX then FRangeMaxX:=FRangeMinX+5;
+      if FLAxis.rangePolicy=rpAuto then FLAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+      if FYMAxis.rangePolicy=rpAuto then FYMAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+      if FRAxis.rangePolicy=rpAuto then FRAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    end;
+  if FAutoSetRangeY then
+    if fmodel.dataCount>0 then begin
+      FRangeMinY:=fmodel.minY;
+      FRangeMaxY:=fmodel.maxY;
+      if FRangeMaxY<=FRangeMinY then FRangeMaxY:=FRangeMinY+5;
+      if FTAxis.rangePolicy=rpAuto then FTAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+      if FXMAxis.rangePolicy=rpAuto then FXMAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+      if FBAxis.rangePolicy=rpAuto then FBAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+    end;
+  xstart:=RangeMinX;
+  xend:=RangeMaxX;
+  xfactor:=FValueAreaWidth / (xend-xstart);
+  ystart:=RangeMinY;
+  yend:=RangeMaxY;
+  yfactor:=FValueAreaHeight / (yend-ystart);
+
 
   with result.Canvas do begin
     brush.style:=bsSolid;
@@ -659,71 +878,13 @@ begin
     FillRect(FValueAreaX,FValueAreaY,FValueAreaX+FValueAreaWidth,FValueAreaY+FValueAreaHeight);
     brush.style:=bsClear;
     //Draw axis
-    pen.style:=psSolid;
-    pen.color:=clBlack;
-    MoveTo(FValueAreaX-1,FValueAreaY);
-    LineTo(FValueAreaX-1,FValueAreaBottom+1);
-    LineTo(FValueAreaX+FValueAreaWidth,FValueAreaBottom+1);
-    captionOld:='';
-    if IsNan(XAxis.min) or IsInfinite(XAxis.min) or IsNan(XAxis.max) or IsInfinite(XAxis.max) then begin
-      //can't use axis, fall back to default
-      xstart:=0;
-      xend:=100;
-    end else begin
-      xstart:=XAxis.min;
-      xend:=XAxis.max;
-    end;
-    xfactor:=FValueAreaWidth / (xend-xstart);
-    p:=xstart;
-    while p<=xend do begin
-      caption:=XAxis.doTranslate(p);
-      if caption<>captionOld then begin
-        captionOld:=caption;
-        pos:=FValueAreaX+round((p-xstart)*xfactor);
-        if XAxis.gridLinePen.Style<>psClear then begin
-          pen:=XAxis.gridLinePen;
-          MoveTo(pos,FValueAreaY);
-          LineTo(pos,FValueAreaBottom);
-          pen:=XAxis.linePen;
-        end;
-        MoveTo((pos),FValueAreaBottom-2);
-        LineTo((pos),FValueAreaBottom+3);
-        TextOut((pos)-textwidth(caption) div 2,FValueAreaBottom+4,caption);
-      end;
-      if IsNan(XAxis.resolution) or IsInfinite(XAxis.resolution) then p+=round((xend-xstart) / 10)
-      else p+=XAxis.resolution;
-    end;
+    if FLAxis.Visible then drawVertAxis(FLAxis,fvalueAreaX,true);
+    if FRAxis.Visible then drawVertAxis(FRAxis,FValueAreaRight,false);
+    if FYMAxis.Visible then drawVertAxis(FYMAxis,fvalueAreaX+FValueAreaWidth div 2,false);
 
-
-    if IsNan(YAxis.min) or IsInfinite(YAxis.min) or IsNan(YAxis.max) or IsInfinite(YAxis.max) then begin
-      //can't use axis, fall back to default
-      ystart:=0;
-      yend:=100;
-    end else begin
-      ystart:=YAxis.min;
-      yend:=YAxis.max;
-    end;
-    yfactor:=FValueAreaHeight / (yend-ystart);
-    p:=ystart;
-    pen.color:=clBlack;
-    while p<=yend do begin
-      caption:=YAxis.doTranslate(p);
-      if caption<>captionOld then begin
-        captionOld:=caption;
-        pos:=FValueAreaBottom-round((p-ystart)*yfactor);
-        if YAxis.gridLinePen.Style<>psClear then begin
-          pen:=YAxis.gridLinePen;
-          MoveTo(FValueAreaX,pos);
-          LineTo(FValueAreaRight,pos);
-          pen:=YAxis.linePen;
-        end;
-        MoveTo(FValueAreaX-3,pos);
-        LineTo(FValueAreaX+2,pos);
-      end;
-      TextOut(FValueAreaX-3-TextWidth(caption),pos-textHeightC div 2, caption);
-      if IsNan(YAxis.resolution) or IsInfinite(YAxis.resolution) then p+=round((yend-ystart) / 10)
-      else p+=YAxis.resolution;
-    end;
+    if FTAxis.Visible then drawHorzAxis(FTAxis,fvalueAreaY,true);
+    if FBAxis.Visible then drawHorzAxis(FBAxis,FValueAreaBottom,false);
+    if FXMAxis.Visible then drawHorzAxis(FXMAxis,fvalueAreaY+FValueAreaHeight div 2,false);
 
     //Draw Values
     for i:=0 to FModel.dataCount-1 do begin
@@ -741,7 +902,7 @@ begin
       tempLazImage:=TLazIntfImage.Create(0,0);
       tempLazImage.LoadFromBitmap(result.Handle,0);
       fpbackcolor:=TColorToFPColor(dataBackColor);
-      if YAxis.gridLinePen.Style<>psClear then fplinecolor:=TColorToFPColor(YAxis.gridLinePen.Color)
+      if FLAxis.gridLinePen.Style<>psClear then fplinecolor:=TColorToFPColor(FLAxis.gridLinePen.Color)
       else fplinecolor:=TColorToFPColor(clNone);
       for i:=FValueAreaX+3 to FValueAreaRight do begin //start after horz-axis-segments
         currentColor:=fpbackcolor;
@@ -764,7 +925,7 @@ begin
       brush.style:=bsSolid;
       brush.Color:=legend.color;
       pen.color:=clBlack;
-      legendX:=FValueAreaX+FValueAreaWidth+5;
+      legendX:=result.Width-legend.Width-3;
       Rectangle(legendX,(result.Height -legend.height) div 2,
                 legendX+legend.width,(result.Height + legend.height) div 2);
       pos:=(result.Height -legend.height) div 2+5;
@@ -787,38 +948,11 @@ function TDiagramDrawer.posToDataX(x: longint): float;
 begin
   //umgekehrt:  (i-XAxis.min)*FValueAreaWidth div (XAxis.max-XAxis.min)+FValueAreaX
   if FValueAreaWidth=0 then exit(0);
-   result:=round((x-FValueAreaX)*(XAxis.max-XAxis.min) / FValueAreaWidth + XAxis.min);
+    result:=(x-FValueAreaX)*(RangeMaxX-RangeMinX) / FValueAreaWidth + RangeMinX;
 end;
 
 { TAbstractDiagramModel }
 
-procedure TAbstractDiagramModel.setupAxis(xAxis, yAxis: TAxis; areaWidth, areaHeight: longint);
-begin
-  if XAxis.rangePolicy=rpModelControlled then begin
-    if dataCount>0 then begin
-      XAxis.min:=minX;
-      XAxis.max:=maxX;
-      if xaxis.max<=xaxis.min then xaxis.max:=xaxis.min+5;
-      XAxis.autoResolution(areaWidth);
-    end else begin
-      XAxis.min:=0;
-      XAxis.max:=50;
-      XAxis.autoResolution(areaWidth);
-    end;
-  end;
-  if YAxis.rangePolicy=rpModelControlled then begin
-    if dataCount>0 then begin
-      YAxis.min:=miny;
-      YAxis.max:=maxY;
-      if yaxis.max<=yaxis.min then yaxis.max:=yaxis.min+5;
-      YAxis.autoResolution(areaHeight);
-    end else begin
-      YAxis.min:=0;
-      YAxis.max:=50;
-      YAxis.autoResolution(areaHeight);
-    end;
-  end;
-end;
 
 procedure TAbstractDiagramModel.modified;
 begin
@@ -1051,8 +1185,12 @@ begin
   FDrawer:=TDiagramDrawer.create;
   FDrawer.Diagram.width:=Width;
   FDrawer.Diagram.height:=height;
-  FDrawer.XAxis.FModifiedEvent:=@layoutChanged;
-  FDrawer.YAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FLAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FRAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FTAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FBAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FXMAxis.FModifiedEvent:=@layoutChanged;
+  FDrawer.FYMAxis.FModifiedEvent:=@layoutChanged;
   FDrawer.legend.FModifiedEvent:=@layoutChanged;
   FDrawer.FModifiedEvent:=@layoutChanged;
 end;
@@ -1128,4 +1266,31 @@ begin
 end;
 
 end.
+procedure TAbstractDiagramModel.setupAxis(xAxis, yAxis: TAxis; areaWidth, areaHeight: longint);
+begin
+  if XAxis.rangePolicy=rpModelControlled then begin
+    if dataCount>0 then begin
+      XAxis.min:=minX;
+      XAxis.max:=maxX;
+      if xaxis.max<=xaxis.min then xaxis.max:=xaxis.min+5;
+      XAxis.autoResolution(areaWidth);
+    end else begin
+      XAxis.min:=0;
+      XAxis.max:=50;
+      XAxis.autoResolution(areaWidth);
+    end;
+  end;
+  if YAxis.rangePolicy=rpModelControlled then begin
+    if dataCount>0 then begin
+      YAxis.min:=miny;
+      YAxis.max:=maxY;
+      if yaxis.max<=yaxis.min then yaxis.max:=yaxis.min+5;
+      YAxis.autoResolution(areaHeight);
+    end else begin
+      YAxis.min:=0;
+      YAxis.max:=50;
+      YAxis.autoResolution(areaHeight);
+    end;
+  end;
+end;
 
