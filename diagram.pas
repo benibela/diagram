@@ -86,7 +86,11 @@ type
     x,y:float;
   end;
 
-  TLineStyle=(lsNone, lsLinear);
+  const DiagramEpsilon=1e-15;
+type
+  TModelFlag=(mfEditable);
+  TModelFlags=set of TModelFlag;
+  TLineStyle=(lsNone, lsLinear, lsCubicSpline);
   TPointStyle = (psNone, psPixel, psCircle, psRectangle, psPlus, psCross);
 
   { TAbstractDiagramModel }
@@ -110,6 +114,12 @@ type
     function dataPoints(i:longint):longint; virtual;abstract;
     //**This returns the actual data (you must override it), j from 0 to dataPoints(i)-1, the must be in sorted order (x[i]<x[i+1])
     procedure data(i,j:longint; out x,y:float); virtual;abstract;
+    //**Set the data point and returns the new index (default does nothing and returns j) (if you override it, keep in mind that data must return its values in a sorted order)
+    function setData(i,j:longint; const x,y:float):integer;virtual;
+    //**Add a data point and returns the new index (default does nothing and returns -1) (if you override it, keep in mind that data must return its values in a sorted order)
+    function addData(i:longint; const x,y:float):integer;virtual;
+    //**removes a certain data point (default does nothing)
+    procedure removeData(i,j:longint);virtual;
 
     //**returns the minimum x (default 0, you should override it)
     function minX(i:longint):float; virtual;
@@ -120,6 +130,21 @@ type
     //**returns the maximum value (default scans all values)
     function maxY(i:longint):float; virtual;
 
+    function getFlags: TModelFlags; virtual;//**<returns model flags (e.g. editable)
+
+    //**Searchs the point in row i at position x,y with xtolerance, ytolerance
+    //**If y is NaN, only the x position is used
+    //**If ytolerance is NaN, the x tolerance is used for it
+    //**If the point isn't found, it returns -1
+    //**The default implementation checks all points TODO: implement binary search
+    function find(i:longint; const x:float; const y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    //**like find but set the position to the correct values (default calls find)
+    function findAndGet(i:longint; var x:float; var y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    //**like find but searchs in all rows and returns the correct one (default calls find)
+    function findWithRow(out i:longint; const x:float; const y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    //**like findRow but set the position to the correct values (default calls findAndGet)
+    function findWithRowAndGet(out i:longint; var x:float; var y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+
     function dataX(i,j:longint):float; //**<returns x of point i,j, calls data
     function dataY(i,j:longint):float; //**<returns y of point i,j, calls data
 
@@ -129,10 +154,13 @@ type
     function maxY:float;
   end;
 
-  //**This class draws the data model into a TBitmap
 
   { TDiagramDrawer }
-
+  //a*x^3+b*x^2+c*x+d
+  TDiagramSplinePiece = record
+    a,b,c,d: float;
+  end;
+  //**This class draws the data model into a TBitmap
   TDiagramDrawer = class(TPersistent)
   private
     FAutoSetRangeX: boolean;
@@ -169,6 +197,9 @@ type
     procedure SetRangeMaxY(const AValue: float);
     procedure SetRangeMinX(const AValue: float);
     procedure SetRangeMinY(const AValue: float);
+
+    procedure updateSpline(var spline:TDiagramSplinePiece; const x1,y1,x2,y2,x3,y3: float);
+    function calcSpline(const spline:TDiagramSplinePiece; const x:float):float;
   public
     constructor create;
     function update(): TBitmap;
@@ -178,6 +209,16 @@ type
     procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
 
     function posToDataX(x: longint): float;
+    function posToDataY(y: longint): float;
+    function dataToPosX(const x: float): integer;
+    function dataToPosY(const y: float): integer;
+    function pixelSizeX: float; //**< Returns the width of one output pixel in data coordinates
+    function pixelSizeY: float; //**< Returns the height of one output pixel in data coordinates
+
+    //**this returns the position of the interpolation line (linear or cubic) in data coordinates
+    function lineYatX(i:longint; const x: float): float;
+    //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
+    function findLine(const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
 
     property Diagram: TBitmap read FDiagram;
 
@@ -206,22 +247,38 @@ type
 
 
   { TDiagramView }
-
+  TDiagramPointMovement=(pmStandard, pmAffectNeighbours);
+  TDiagramEditAction=(eaMovePoints, eaAddPoints, eaDeletePoints);
+  TDiagramEditActions=set of TDiagramEditAction;
   TDiagramView = class (TCustomControl)
   private
+    FAllowedEditActions: TDiagramEditActions;
+    FPointMovement: TDiagramPointMovement;
+    FSelRow,FSelPoint:longint;
+    FSelPointMoving: boolean;
+    FHighlightPoint: TDataPoint;
     FDrawer: TDiagramDrawer;
     FModel: TAbstractDiagramModel;
     procedure modelChanged(sender:Tobject);
     procedure layoutChanged(sender:Tobject);
     procedure DoOnResize;override;
+    procedure SetAllowedEditActions(const AValue: TDiagramEditActions);
     procedure SetModel(const AValue: TAbstractDiagramModel);
+    procedure SetPointMovement(const AValue: TDiagramPointMovement);
   public
     constructor create(aowner:TComponent);override;
     destructor destroy;override;
     procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
     procedure paint;override;
+    procedure MouseDown(Button: TMouseButton; Shift:TShiftState; X,Y:Integer); override;
+    procedure MouseMove(Shift: TShiftState; X,Y: Integer);override;
+    procedure MouseUp(Button: TMouseButton; Shift:TShiftState; X,Y:Integer); override;
+    procedure KeyUp(var Key: Word; Shift: TShiftState); override;
+    procedure DoExit; override;
   published
     property Drawer: TDiagramDrawer read FDrawer;
+    property PointMovement: TDiagramPointMovement read FPointMovement write SetPointMovement;
+    property AllowedEditActions: TDiagramEditActions read FAllowedEditActions write SetAllowedEditActions;
     property Model: TAbstractDiagramModel read FModel write SetModel;
   end;
 
@@ -234,6 +291,8 @@ type
     points: array of TDataPoint;
     pointCount: longint;
     lastRead: longint; //**<last point returned by nextX (needed for O(1) index lookup)
+    procedure rescanYBorder;
+    function resortPoint(i:longint):integer;
   public
     constructor create(aowner:TAbstractDiagramModel; acolor: TColor);
     color: TColor;
@@ -243,20 +302,27 @@ type
     function count:longint;
     //**adds a point at position (x,y) in the sorted list, removing duplicates on same x. (possible moving all existing points => O(1) if called in right order, O(n) if the inserted point belongs to the beginnning).
     //**It does use an intelligent growth strategy (size *2 if < 512, size+=512 otherwise, starting at 8)
-    procedure addPoint(x,y:float); overload;
+    function addPoint(x,y:float):longint; overload;
     //**adds a point at position (x+1,y) in the sorted list. (possible moving all existing points).
     //**It does use an intelligent growth strategy
-    procedure addPoint(y:float); overload;
+    function addPoint(y:float):longint; overload;
+    //**sets the point j to the position x,y; reorders point if necessary (possible moving the point j to another index) (can change minY, maxY)
+    function setPoint(j:longint; const x,y:float):integer;
+    //**removes point j
+    procedure removePoint(j:longint);
 
-    procedure data(i:longint; out x,y: float); //**<returns the data at position i
+    procedure point(i:longint; out x,y: float); //**<returns the data at position i
   end;
 
   { TDiagramDataListModel }
 
   TDiagramDataListModel = class (TAbstractDiagramModel)
   private
+    FFlags: TModelFlags;
     FLists: TFPList;
     function getDataList(i:Integer): TDataList;
+    function GetFlags: TModelFlags;override;
+    procedure SetFlags(const AValue: TModelFlags);
   public
     constructor create;
     destructor destroy;override;
@@ -277,6 +343,12 @@ type
     function dataPoints(i:longint): longint; override;
     //**This returns the actual data (amortized O(1) if called in correct order)
     procedure data(i,j:longint; out x,y:float); override;
+    //**Set the data point (only accept changes if flags contains mfEditable, use lists[i].setPoint in other cases)
+    function setData(i,j:longint; const x,y:float):integer;override;
+    //**Add a data point to an existing row and returns the new index (only accept changes if flags contains mfEditable, use lists[i].addPoint in other cases)
+    function addData(i:longint; const x,y:float):integer;override;
+    //**removes the data point (only accept changes if flags contains mfEditable, use lists[i].removePoint in other cases)
+    procedure removeData(i,j:longint);override;
 
     //**returns the minimum x
     function minX(i:longint):float; override;overload;
@@ -287,8 +359,9 @@ type
     //**returns the maximum value (O(1))
     function maxY(i:longint):float; override;overload;
 
-
     property lists[i:Integer]: TDataList read getDataList; default;
+  published
+    property Flags: TModelFlags read GetFlags write SetFlags;
   end;
 implementation
 const PInfinity=Infinity;
@@ -420,7 +493,7 @@ begin
 
 end;
 
-procedure TDataList.data(i: longint; out x, y: float);
+procedure TDataList.point(i: longint; out x, y: float);
 begin
   if (i<0) or (i>=pointCount) then begin
     x:=nan;
@@ -431,6 +504,39 @@ begin
   y:=points[i].y;
 end;
 
+procedure TDataList.rescanYBorder;
+var i:longint;
+begin
+  maxY:=MInfinity;
+  minY:=PInfinity;
+  for i:=0 to pointCount-1 do begin
+    if points[i].y<minY then minY:=points[i].y;
+    if points[i].y>maxY then maxY:=points[i].y;
+  end;
+end;
+
+function TDataList.resortPoint(i: longint):integer;
+var temp:TDataPoint;
+begin
+  if i>=pointCount then exit;
+  //check left side
+  while (i>=1) and (points[i-1].x>points[i].x) do begin
+    temp:=points[i];
+    points[i]:=points[i-1];
+    points[i-1]:=temp;
+    i-=1;
+  end;
+  //check right side
+  while (i<pointCount-1) and (points[i].x>points[i+1].x) do begin
+    temp:=points[i];
+    points[i]:=points[i+1];
+    points[i+1]:=temp;
+    i+=1;
+  end;
+  result:=i;
+  minX:=points[0].x;
+  maxX:=points[pointCount-1].x;
+end;
 
 constructor TDataList.create(aowner: TAbstractDiagramModel; acolor: TColor);
 begin
@@ -459,7 +565,7 @@ begin
   result:=pointCount;
 end;
 
-procedure TDataList.addPoint(x,y:float);
+function TDataList.addPoint(x,y:float):longint;
 var i:integer;
 begin
   if x<minX then minX:=x;
@@ -472,7 +578,7 @@ begin
     points[0].x:=x;
     points[0].y:=y;
     if assigned(owner) then owner.modified;
-    exit;
+    exit(0);
   end;
   if pointCount=length(points) then begin //resize
     if pointCount<512 then setlength(points,length(points)*2)
@@ -486,7 +592,7 @@ begin
           points[i].y:=y;    //this could break the minY/maxY
           if assigned(owner) then owner.modified;
         end;
-        exit;
+        exit(i);
       end else if points[i].x>x then break;
       inc(i);
     end;
@@ -499,11 +605,45 @@ begin
   points[i].x:=x;
   points[i].y:=y;
   if assigned(owner) then owner.modified;
+  result:=i;
 end;
-procedure TDataList.addPoint(y:float);
+function TDataList.addPoint(y:float):longint;
 begin
-  if pointCount=0 then addPoint(0,y)
-  else addPoint(points[pointCount-1].x+1,y);
+  if pointCount=0 then result:=addPoint(0,y)
+  else result:=addPoint(points[pointCount-1].x+1,y);
+end;
+
+function TDataList.setPoint(j: longint; const x, y: float):integer;
+var wasBorder:boolean;
+begin
+  if (j<0) or (j>=pointCount) then exit;
+  wasBorder:=(points[j].y=minY) or (points[j].y=maxY);
+  points[j].x:=x;
+  points[j].y:=y;
+  if wasBorder then rescanYBorder;
+  result:=resortPoint(j);
+  if assigned(owner) then owner.modified;
+end;
+
+procedure TDataList.removePoint(j: longint);
+var wasBorder:boolean;
+begin
+  if (j<0) or (j>=pointCount) then exit;
+  if j=pointCount-1 then begin
+    pointCount-=1;
+    if pointCount>0 then begin
+      maxX:=points[pointCount-1].x;
+      if (maxY=points[j].y) or (minY=points[j].y) then rescanYBorder;
+    end;
+    if assigned(owner) then owner.modified;
+    exit;
+  end;
+  wasBorder:=(points[j].y=minY) or (points[j].y=maxY);
+  move(points[j+1],points[j],sizeof(points[j])*(pointCount-j-1));
+  pointCount-=1;
+  if j=0 then minX:=points[0].x;
+  if wasBorder then rescanYBorder;
+  if assigned(owner) then owner.modified;
 end;
 
 //==================================================================================
@@ -553,6 +693,37 @@ begin
   if FRangeMinY=AValue then exit;
   FRangeMinY:=AValue;
   doModified;
+end;
+
+procedure TDiagramDrawer.updateSpline(var spline: TDiagramSplinePiece;
+  const x1,y1,x2,y2,x3,y3: float);
+//P(x1) = y1, P(x2) = y2, P(x3) = y3
+//P'(x1) = P0'(x1)
+var od1, fr: float;
+begin
+  with spline do begin
+    od1:= (3*a*x1+2*b)*x1+c; //P0'(ox) = 3*a*x*x+2*b*x+c
+
+    {
+    SOLVE([a·x1^3 + b·x1*x1 + c·x1 + d = y1, a·x2^3 + b·x2^2 + c·x2 + d = y2, 3·a·x1·x1 + 2·b·ox + c = od1, a·x3^3 + b·x3^2 + c·x3 + d = y3], [b, a, c, d])
+    }
+    fr:=((x1*x1-2*x1*x3+x3*x3)*(x1*x1-2*x1*x2+x2*x2)*(x2-x3));
+    if abs(fr)<DiagramEpsilon then exit;
+    fr:=1/fr;
+    //TODO: optimize
+    a:=fr*(od1*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*(y2-y3)-2*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*(y1-y3)+x3*x3*(y2-y1));
+    b:=-fr*(od1*(x1*x1*x1-x1*(x2*x2+x2*x3+x3*x3)+x2*x3*(x2+x3))*(x2-x3)+2*x1*x1*x1*(y2-y3)-3*x1*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1));
+    c:=fr*(od1*(x2-x3)*(x1*x1*x1*(x2+x3)-x1*x1*(x2*x2+x2*x3+x3*x3)+x2*x2*x3*x3)+x1*(x1*x1*x1*(y2-y3)-3*x1*(x2*x2*(y1-y3)+x3*x3*(y2-y1))+2*(x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1))));
+    d:=-fr*(od1*x1*x2*x3*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*x1*x1*(x3*y2-x2*y3)+2*x1*x1*x1*(x2*x2*y3-x3*x3*y2)-x1*x1*(x2*x2*x2*y3+3*x2*x2*x3*y1-3*x2*x3*x3*y1-x3*x3*x3*y2)+2*x1*x2*x3*y1*(x2+x3)*(x2-x3)-x2*x2*x3*x3*y1*(x2-x3));
+  end;
+end;
+
+function TDiagramDrawer.calcSpline(const spline: TDiagramSplinePiece;
+  const x: float):float;
+begin
+  //result:=a*x*x*x+b*x*x+c*x+d;
+  with spline do
+    result:=((a*x+b)*x+c)*x+d;
 end;
 
 procedure TDiagramDrawer.doModified;
@@ -684,6 +855,18 @@ const AXIS_SIZE=20;
 var xstart,ystart,xfactor,yfactor,xend,yend: float; //copied ranges
     textHeightC:longint;
 
+  function translateX(const x:float):longint;inline;
+  begin
+    result:=FValueAreaX+round((x-xstart)*xfactor);
+  end;
+  function translateXBack(const x:longint):float;inline;
+  begin
+    result:=(x-FValueAreaX)/xfactor+xstart;
+  end;
+  function translateY(const y:float):longint;inline;
+  begin
+    result:=FValueAreaBottom-round((y-ystart)*yfactor);
+  end;
   procedure translate(const x,y:float; out px,py:longint);inline;
   begin
     px:=FValueAreaX+round((x-xstart)*xfactor);
@@ -708,6 +891,36 @@ var
       getRPos(id,i,x,y);
       canvas.LineTo(x,y);
     end;
+  end;
+
+  procedure drawCubicSpline(id:longint);
+  var i,x,x1,y1:longint;
+      fx0,fy0,fx1,fy1,fx2,fy2: float;
+      spline: TDiagramSplinePiece;
+  begin
+    //see also lineYatX
+    FModel.data(id,0,fx1,fy1);
+    translate(fx1,fy1,x1,y1);
+    canvas.MoveTo(x1,y1);
+    FModel.data(id,1,fx2,fy2);
+    FillChar(spline,sizeof(spline),0);
+    updateSpline(spline,fx1-2*(fx2-fx1),fy1,fx1,fy1,fx2,fy2);
+    for i:=1 to fModel.dataPoints(id)-1 do begin
+      //next point
+      fx0:=fx1;fy0:=fy1;
+      fx1:=fx2;fy1:=fy2;
+      FModel.data(id,i,fx2,fy2);
+      updateSpline(spline,fx0,fy0,fx1,fy1,fx2,fy2);
+      //draw spline
+      for x:=translateX(fx0) to translateX(fx1) do
+        canvas.LineTo(x,translateY(calcSpline(spline,translateXBack(x))));
+        //canvas.LineTo(ox+x,translateY(calcSpline(spline,x/dw)));
+    end;
+    //last point with connection to virtual point far right
+    updateSpline(spline,fx1,fy1,fx2,fy2,fx2+2*(fx2-fx1),fy2);
+    //draw spline
+    for x:=translateX(fx1) to translateX(fx2) do
+      canvas.LineTo(x,translateY(calcSpline(spline,translateXBack(x))));
   end;
 
   procedure drawPoints(id: longint);
@@ -785,7 +998,7 @@ var
       caption:=axis.doTranslate(p);
       if caption<>captionOld then begin
         captionOld:=caption;
-        pos:=FValueAreaY+round((p-ystart)*yfactor);
+        pos:=FValueAreaBottom-round((p-ystart)*yfactor);
         if axis.gridLinePen.Style<>psClear then begin
           canvas.pen:=axis.gridLinePen;
           canvas.MoveTo(fvalueAreaX,pos);
@@ -892,6 +1105,7 @@ begin
       FModel.setupCanvasForData(i,canvas);
       case LineStyle of
         lsLinear: drawLinearLines(i);
+        lsCubicSpline: drawCubicSpline(i);
       end;
       if PointStyle<>psNone then drawPoints(i);
     end;
@@ -948,7 +1162,92 @@ function TDiagramDrawer.posToDataX(x: longint): float;
 begin
   //umgekehrt:  (i-XAxis.min)*FValueAreaWidth div (XAxis.max-XAxis.min)+FValueAreaX
   if FValueAreaWidth=0 then exit(0);
-    result:=(x-FValueAreaX)*(RangeMaxX-RangeMinX) / FValueAreaWidth + RangeMinX;
+  result:=(x-FValueAreaX)*(FRangeMaxX-FRangeMinX) / FValueAreaWidth + FRangeMinX;
+end;
+
+function TDiagramDrawer.posToDataY(y: longint): float;
+begin
+  if FValueAreaHeight=0 then exit(0);
+  result:=(FValueAreaBottom- y)*(RangeMaxY-RangeMinY) / FValueAreaHeight + RangeMinY;
+end;
+
+function TDiagramDrawer.dataToPosX(const x: float): integer;
+begin
+  result:=round((x-RangeMinX)*FValueAreaWidth / (RangeMaxX-RangeMinX))+FValueAreaX;
+end;
+
+function TDiagramDrawer.dataToPosY(const y: float): integer;
+begin
+  result:=FValueAreaBottom-round((y-RangeMinY)*FValueAreaHeight / (RangeMaxY-RangeMinY));
+end;
+
+function TDiagramDrawer.pixelSizeX: float;
+begin
+  result:=abs((RangeMaxX-RangeMinX) / FValueAreaWidth);
+end;
+
+function TDiagramDrawer.pixelSizeY: float;
+begin
+  result:=abs((RangeMaxY-RangeMinY) / FValueAreaHeight);
+end;
+
+function TDiagramDrawer.lineYatX(i:longint; const x: float): float;
+var j:longint;
+    x0,y0,x1,y1,x2,y2: float;
+    spline: TDiagramSplinePiece;
+begin
+  if not Assigned(FModel) then exit(nan);
+  if FModel.dataPoints(i)=0 then exit(nan);
+  if FModel.dataPoints(i)=1 then exit(FModel.dataY(i,0));
+  if x<FModel.minX(i) then exit(FModel.dataY(i,0));
+  if x>FModel.maxX(i) then exit(FModel.dataY(i,FModel.dataPoints(i)-1));
+  case LineStyle of
+    lsNone, lsLinear: begin
+      FModel.data(i,0,x1,y1);
+      for j:=1 to FModel.dataPoints(i)-1 do begin
+        FModel.data(i,j,x2,y2);
+        if (x>=x1) and  (x<=x2) then
+          if abs(x1-x2)>DiagramEpsilon then exit((x-x1)*(y2-y1)/(x2-x1)+y1)
+          else exit((y1+y2)/2); //better not really correct result than crash
+        x1:=x2;y1:=y2;
+      end;
+    end;
+    lsCubicSpline: begin
+      FModel.data(i,0,x1,y1);
+      FModel.data(i,1,x2,y2);
+      FillChar(spline,sizeof(spline),0);
+      updateSpline(spline,x1-2*(x2-x1),y1,x1,y1,x2,y2);
+      for j:=1 to fModel.dataPoints(i)-1 do begin
+        //next point
+        x0:=x1;y0:=y1;
+        x1:=x2;y1:=y2;
+        FModel.data(i,j,x2,y2);
+        updateSpline(spline,x0,y0,x1,y1,x2,y2);
+        if (x>=x0) and (x<=x1) then
+          exit(calcSpline(spline,x));
+      end;
+      //last point with connection to virtual point far right
+      updateSpline(spline,x1,y1,x2,y2,x2+2*(x2-x1),y2);
+      //draw spline
+      if (x>=x1) and (x<=x2) then
+        exit(calcSpline(spline,x));
+    end;
+  end;
+  result:=nan;
+end;
+
+function TDiagramDrawer.findLine(const x, y: float; const ytolerance: float
+  ): longint;
+var i:longint;
+    ly: float;
+begin
+  for i:=0 to FModel.dataCount-1 do begin
+    if (x<FModel.minX(i)) or (x>FModel.maxX(i)) then continue;
+    ly:=lineYatX(i,x);
+    if isNan(ly) then continue;
+    if abs(ly-y) <= ytolerance then exit(i);
+  end;
+  result:=-1;
 end;
 
 { TAbstractDiagramModel }
@@ -972,6 +1271,22 @@ end;
 
 procedure TAbstractDiagramModel.setupCanvasForData(i: longint; c: TCanvas);
 begin
+  ;
+end;
+
+function TAbstractDiagramModel.setData(i, j: longint; const x, y: float):integer;
+begin
+  result:=j;
+end;
+
+function TAbstractDiagramModel.addData(i: longint; const x, y: float): integer;
+begin
+  result:=-1;
+end;
+
+procedure TAbstractDiagramModel.removeData(i, j: longint);
+begin
+  ;
 end;
 
 
@@ -1003,6 +1318,65 @@ begin
     result:=max(result,dataY(i,j));
 end;
 
+function TAbstractDiagramModel.getFlags: TModelFlags;
+begin
+  result:=[];
+end;
+
+function TAbstractDiagramModel.find(i: longint; const x: float;
+  const y: float; const xtolerance: float; const ytolerance: float): longint;
+var j:longint;
+    px,py,ryt: float;
+begin
+  result:=-1;
+  if IsNan(y) then begin
+    for j:=0 to dataPoints(i)-1 do
+      if abs(dataX(i,j)-x) <= xtolerance then exit(j);
+  end else begin
+    ryt:=ytolerance;
+    if IsNan(ryt) then ryt:=xtolerance;
+    for j:=0 to dataPoints(i)-1 do begin
+      data(i,j,px,py);
+      if (abs(px-x) <= xtolerance) and (abs(py-y) <= ytolerance) then exit(j);
+    end;
+  end;
+end;
+
+function TAbstractDiagramModel.findAndGet(i: longint; var x: float;
+  var y: float; const xtolerance: float; const ytolerance: float): longint;
+begin
+  result:=find(i,x,y,xtolerance,ytolerance);
+  if result<>-1 then data(i,result,x,y);
+end;
+
+function TAbstractDiagramModel.findWithRow(out i: longint; const x: float;
+  const y: float; const xtolerance: float; const ytolerance: float): longint;
+var j:longint;
+begin
+  result:=-1;
+  for j:=0 to dataCount-1 do begin
+    result:=find(j,x,y,xtolerance,ytolerance);
+    if result<>-1 then begin
+      i:=j;
+      exit;
+    end;
+  end;
+end;
+
+function TAbstractDiagramModel.findWithRowAndGet(out i: longint; var x: float;
+  var y: float; const xtolerance: float; const ytolerance: float): longint;
+var j:longint;
+begin
+  result:=-1;
+  for j:=0 to dataCount-1 do begin
+    result:=findAndGet(j,x,y,xtolerance,ytolerance);
+    if result<>-1 then begin
+      i:=j;
+      exit;
+    end;
+  end;
+end;
+
 function TAbstractDiagramModel.dataX(i, j: longint): float;
 var t:float;
 begin
@@ -1012,7 +1386,7 @@ end;
 function TAbstractDiagramModel.dataY(i, j: longint): float;
 var t:float;
 begin
-  data(i,j,result,t);
+  data(i,j,t,result);
 end;
 
 function TAbstractDiagramModel.minX: float;
@@ -1052,6 +1426,18 @@ end;
 function TDiagramDataListModel.getDataList(i:Integer): TDataList;
 begin
   result:=TDataList(FLists[i]);
+end;
+
+function TDiagramDataListModel.GetFlags: TModelFlags;
+begin
+  result:=FFlags;
+end;
+
+procedure TDiagramDataListModel.SetFlags(const AValue: TModelFlags);
+begin
+  if FFlags=AValue then exit;
+  FFlags:=AValue;
+  modified;
 end;
 
 constructor TDiagramDataListModel.create;
@@ -1122,11 +1508,32 @@ end;
 
 procedure TDiagramDataListModel.data(i, j: longint; out x, y: float);
 begin
-  if (i>=0) and (i<FLists.Count) then lists[i].data(j,x,y)
+  if (i>=0) and (i<FLists.Count) then lists[i].point(j,x,y)
   else begin
     x:=nan;
     y:=nan;
   end;
+end;
+
+function TDiagramDataListModel.setData(i, j: longint; const x, y: float):integer;
+begin
+  if not (mfEditable in Flags) then exit;
+  if (i<0) or (i>=FLists.Count) then exit;
+  result:=lists[i].setPoint(j,x,y);
+end;
+
+function TDiagramDataListModel.addData(i: longint; const x, y: float): integer;
+begin
+  if not (mfEditable in Flags) then exit;
+  if (i<0) or (i>=FLists.Count) then exit;
+  result:=lists[i].addPoint(x,y);
+end;
+
+procedure TDiagramDataListModel.removeData(i, j: longint);
+begin
+  if not (mfEditable in Flags) then exit;
+  if (i<0) or (i>=FLists.Count) then exit;
+  lists[i].removePoint(j);
 end;
 
 function TDiagramDataListModel.minX(i: longint): float;
@@ -1174,9 +1581,23 @@ begin
   inherited DoOnResize;
 end;
 
+procedure TDiagramView.SetAllowedEditActions(const AValue: TDiagramEditActions
+  );
+begin
+  if FAllowedEditActions=AValue then exit;
+  FAllowedEditActions:=AValue;
+  ;
+end;
+
 procedure TDiagramView.SetModel(const AValue: TAbstractDiagramModel);
 begin
   SetModel(AValue,false);
+end;
+
+procedure TDiagramView.SetPointMovement(const AValue: TDiagramPointMovement);
+begin
+  if FPointMovement=AValue then exit;
+  FPointMovement:=AValue;
 end;
 
 constructor TDiagramView.create(aowner:TComponent);
@@ -1193,6 +1614,9 @@ begin
   FDrawer.FYMAxis.FModifiedEvent:=@layoutChanged;
   FDrawer.legend.FModifiedEvent:=@layoutChanged;
   FDrawer.FModifiedEvent:=@layoutChanged;
+  FSelPoint:=-1;
+  FHighlightPoint.x:=NaN;
+  FPointMovement:=pmAffectNeighbours;
 end;
 
 destructor TDiagramView.destroy;
@@ -1219,8 +1643,113 @@ begin
   if FModel.fmodified or FDrawer.FLayoutModified then
     FDrawer.update();
   canvas.Draw(0,0,FDrawer.Diagram);
+  if not IsNan(FHighlightPoint.x) then begin
+    canvas.Pen.Style:=psSolid;
+    canvas.Brush.Style:=bsSolid;
+    canvas.Pen.Color:=clBlue;
+    canvas.Brush.Color:=clYellow;
+    canvas.EllipseC(FDrawer.dataToPosX(FHighlightPoint.x),FDrawer.dataToPosY(FHighlightPoint.y),3,3);
+  end;
+  if FSelPoint<>-1 then begin
+    canvas.Pen.Style:=psSolid;
+    canvas.Brush.Style:=bsSolid;
+    canvas.Pen.Color:=clRed;
+    canvas.Brush.Color:=clYellow;
+    canvas.EllipseC(FDrawer.dataToPosX(FModel.dataX(FSelRow,FSelPoint)),FDrawer.dataToPosY(FModel.dataY(FSelRow,FSelPoint)),3,3);
+  end;
+
   FModel.fmodified:=false;
   FDrawer.FLayoutModified:=false;
+end;
+
+procedure TDiagramView.mouseDown(Button: TMouseButton; Shift: TShiftState; X,
+  Y: Integer);
+var fx,fy:float;
+    i:longint;
+begin
+  inherited mouseDown(Button, Shift, X, Y);
+  if not assigned(FDrawer.FModel) then exit;
+  if (mfEditable in FModel.getFlags) and ([eaMovePoints, eaDeletePoints]*FAllowedEditActions<>[]) then begin
+    fX:=FDrawer.posToDataX(x);
+    fY:=FDrawer.posToDataY(y);
+    FSelPoint:=fmodel.findWithRow(FSelRow, fX,fY,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
+    FSelPointMoving:=FSelPoint<>-1;
+    FHighlightPoint.x:=nan;
+  end;
+  if (eaAddPoints in FAllowedEditActions) and not FSelPointMoving then begin
+    fX:=FDrawer.posToDataX(x);
+    fY:=FDrawer.posToDataY(y);
+    i:=fdrawer.findLine(fx,fy,10*FDrawer.PointSize*FDrawer.pixelSizeY);
+    if i<>-1 then begin
+      FSelRow:=i;
+      FSelPoint:= FModel.addData(i,fx,fy);
+      FSelPointMoving:=FSelPoint<>-1;
+    end;
+  end;
+  if eaDeletePoints in FAllowedEditActions then SetFocus;
+end;
+
+procedure TDiagramView.mouseMove(Shift: TShiftState; X, Y: Integer);
+var i,j:longint;
+    fx,fy:float;
+begin
+  inherited mouseMove(Shift, X, Y);
+  if not assigned(FModel) then exit;
+  if FModel.dataCount=0 then exit;
+  if (FSelPoint<>-1) and (FSelPointMoving) then begin
+    //j:=fmodel.findAndGet(FSelRow, FSelPoint.X,FSelPoint.Y,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
+    {if j=-1 then begin
+      FSelPoint:=nan;
+      Repaint;
+      exit;
+    end;}
+    j:=fmodel.setData(FSelRow,FSelPoint,FDrawer.posToDataX(X),FDrawer.posToDataY(Y));
+    if PointMovement=pmAffectNeighbours then
+      if j<FSelPoint then fmodel.setData(FSelRow,FSelPoint,FDrawer.posToDataX(X),FDrawer.posToDataY(Y))
+      else if y>FSelPoint then fmodel.setData(FSelRow,FSelPoint,FDrawer.posToDataX(X),FDrawer.posToDataY(Y));
+    FSelPoint:=j;
+  end else if (mfEditable in FModel.getFlags) and ([eaMovePoints, eaDeletePoints]*FAllowedEditActions<>[]) then begin
+    fX:=FDrawer.posToDataX(x);
+    fY:=FDrawer.posToDataY(y);
+    j:=fmodel.findWithRowAndGet(i, fX,fY,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
+    if IsNan(FHighlightPoint.x) and (j<>-1) then begin
+      FHighlightPoint.x:=fx;
+      FHighlightPoint.y:=fy;
+      Repaint;
+    end else if not IsNan(FHighlightPoint.x) and (j=-1) then begin
+      FHighlightPoint.x:=NaN;
+      Repaint;
+    end;
+  end;
+end;
+
+procedure TDiagramView.MouseUp(Button: TMouseButton; Shift: TShiftState; X,
+  Y: Integer);
+begin
+  inherited MouseUp(Button, Shift, X, Y);
+  FSelPointMoving:=false;
+  if (FSelPoint<>-1) and not (eaDeletePoints in FAllowedEditActions) then begin
+    FSelPoint:=-1;
+    repaint;
+  end;
+  if not assigned(FDrawer.FModel) then exit;
+end;
+
+procedure TDiagramView.KeyUp(var Key: Word; Shift: TShiftState);
+begin
+  inherited KeyUp(Key, Shift);
+  if (key=VK_DELETE) and (eaDeletePoints in FAllowedEditActions) and (FSelPoint <>-1) and (assigned(fmodel)) then begin
+     FModel.removeData(FSelRow,FSelPoint);
+     if FSelPoint>=FModel.dataPoints(FSelRow) then FSelPoint:=FModel.dataPoints(FSelRow)-1;
+  end;
+end;
+
+procedure TDiagramView.DoExit;
+begin
+  inherited DoExit;
+  FSelPoint:=-1;
+  FHighlightPoint.x:=nan;
+  Repaint;
 end;
 
 { TLegend }
@@ -1266,31 +1795,3 @@ begin
 end;
 
 end.
-procedure TAbstractDiagramModel.setupAxis(xAxis, yAxis: TAxis; areaWidth, areaHeight: longint);
-begin
-  if XAxis.rangePolicy=rpModelControlled then begin
-    if dataCount>0 then begin
-      XAxis.min:=minX;
-      XAxis.max:=maxX;
-      if xaxis.max<=xaxis.min then xaxis.max:=xaxis.min+5;
-      XAxis.autoResolution(areaWidth);
-    end else begin
-      XAxis.min:=0;
-      XAxis.max:=50;
-      XAxis.autoResolution(areaWidth);
-    end;
-  end;
-  if YAxis.rangePolicy=rpModelControlled then begin
-    if dataCount>0 then begin
-      YAxis.min:=miny;
-      YAxis.max:=maxY;
-      if yaxis.max<=yaxis.min then yaxis.max:=yaxis.min+5;
-      YAxis.autoResolution(areaHeight);
-    end else begin
-      YAxis.min:=0;
-      YAxis.max:=50;
-      YAxis.autoResolution(areaHeight);
-    end;
-  end;
-end;
-
