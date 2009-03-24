@@ -5,13 +5,18 @@ unit diagram;
 interface
 
 uses
-  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math,FPimage,IntfGraphics,LCLType;
+  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math,FPimage,IntfGraphics,LCLType,LCLProc;
 
 type
   TAxis=class;
   TValueTranslateEvent=procedure (sender: TAxis; i: float; var translated: string) of object;
 
   { TLegend }
+
+  //a*x^3+b*x^2+c*x+d
+  TDiagramSplinePiece = record
+    a,b,c,d: float;
+  end;
 
   TLegend=class(TPersistent)
   private
@@ -70,6 +75,8 @@ type
     //title: string;
 
     function translate(const i:float): string;inline;
+    //**choose a usable resolution for a given range/output
+    //**this procedure tries to keep rmin+n*resolution in output coordinates constant
     procedure rangeChanged(const rmin,rmax:float; realSize: longint);
   published
     property gridLinePen: TPen read FGridLinePen write SetGridLinePen;
@@ -102,11 +109,16 @@ type
   }
   TAbstractDiagramModel = class(TPersistent)
   private
-    fmodified: boolean;
-    fmodifiedEvent: TNotifyEvent;
+    FSplines: array of array of TDiagramSplinePiece; //**stores a spline interpolation of the data (only if necessary)
+    FmodifiedSinceSplineCalc: boolean;
+    fmodifiedEvents: TMethodList;
+    procedure calculateSplines(); //**< always (even if not needed) calculates a spline (O(n) memory)
   protected
-    procedure modified; //**<Call when ever the model data has been changed
+    procedure doModified; //**<Call when ever the model data has been changed
   public
+    constructor create;
+    destructor destroy;override;
+
     //**This returns the number of data rows (override if you use more than 1)
     function dataRows: longint; virtual;
     //**This returns the title of every data row for the legend
@@ -155,18 +167,18 @@ type
     function maxX:float;
     function minY:float;
     function maxY:float;
+
+    //**this returns the position of the interpolation line (linear/cubic) in data coordinates
+    function lineYatX(const lineStyle:TLineStyle; i:longint; const x: float): float;
+    //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
+    function findLine(const lineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
   end;
 
 
   { TDiagramDrawer }
-  //a*x^3+b*x^2+c*x+d
-  TDiagramSplinePiece = record
-    a,b,c,d: float;
-  end;
   //**This class draws the data model into a TBitmap
   TDiagramDrawer = class(TPersistent)
   private
-    FSplines: array of array of TDiagramSplinePiece;
     FAutoSetRangeX: boolean;
     FAutoSetRangeY: boolean;
     FBackColor: TColor;
@@ -177,6 +189,7 @@ type
     FFilled: boolean;
     Flegend: TLegend;
     FModel: TAbstractDiagramModel;
+    FModelModified: boolean; //don't use fmodel.modified => problem with multiple views (but drawer:1<->1:view)
     FModelOwnership: boolean;
     FPointSize: longint;
     FPointStyle: TPointStyle;
@@ -201,10 +214,6 @@ type
     procedure SetRangeMaxY(const AValue: float);
     procedure SetRangeMinX(const AValue: float);
     procedure SetRangeMinY(const AValue: float);
-
-    procedure calculateSplines(); //**< always (even if not needed) calculates a spline (O(n) memory)
-    procedure updateSpline3P(var spline:TDiagramSplinePiece; const x1,y1,x2,y2,x3,y3: float);
-    function calcSpline(const spline:TDiagramSplinePiece; const x:float):float;
   public
     constructor create;
     function update(): TBitmap;
@@ -219,11 +228,6 @@ type
     function dataToPosY(const y: float): integer;
     function pixelSizeX: float; //**< Returns the width of one output pixel in data coordinates
     function pixelSizeY: float; //**< Returns the height of one output pixel in data coordinates
-
-    //**this returns the position of the interpolation line (linear or cubic) in data coordinates
-    function lineYatX(i:longint; const x: float): float;
-    //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
-    function findLine(const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
 
     property Diagram: TBitmap read FDiagram;
 
@@ -273,7 +277,7 @@ type
   public
     constructor create(aowner:TComponent);override;
     destructor destroy;override;
-    procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
+    procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean=false);
     procedure paint;override;
     procedure MouseDown(Button: TMouseButton; Shift:TShiftState; X,Y:Integer); override;
     procedure MouseMove(Shift: TShiftState; X,Y: Integer);override;
@@ -295,13 +299,14 @@ type
     owner: TAbstractDiagramModel;
     points: array of TDataPoint;
     pointCount: longint;
-    lastRead: longint; //**<last point returned by nextX (needed for O(1) index lookup)
+    //lastRead: longint; //**<last point returned by nextX (needed for O(1) index lookup)
     procedure rescanYBorder;
     function resortPoint(i:longint):integer;
   public
     constructor create(aowner:TAbstractDiagramModel; acolor: TColor);
     color: TColor;
     title:string;
+    procedure assign(list:TDataList); //**<assign another list, including colors, etc. (only the owner is excluded)
     //function getPoint(x:longint): longint;
     procedure clear(keepMemory: boolean=false); //**<removes all points, if keepMemory is true, the memory of the points is not freed
     function count:longint;
@@ -337,6 +342,7 @@ type
 
     //**Set the count of data lists
     procedure setDataRows(c:longint);
+    procedure deleteDataRow(i: longint);
     function addDataList:TDataList;
     //**This returns the number of data lists
     function dataRows: longint; override;
@@ -382,8 +388,53 @@ type
     procedure removeData(i,j:longint);override;
   end;
 implementation
+{  Math helper functions  }
 const PInfinity=Infinity;
       MInfinity=NegInfinity;
+
+function calcSpline(const spline:TDiagramSplinePiece; const x:float):float;
+begin
+  //result:=a*x*x*x+b*x*x+c*x+d;
+  with spline do
+    result:=((a*x+b)*x+c)*x+d;
+end;
+
+procedure updateSpline3P(var spline: TDiagramSplinePiece;
+  const x1,y1,x2,y2,x3,y3: float);
+//P(x1) = y1, P(x2) = y2, P(x3) = y3
+//P'(x1) = P0'(x1)
+var od1, fr: float;
+begin
+  with spline do begin
+    od1:= (3*a*x1+2*b)*x1+c; //P0'(ox) = 3*a*x*x+2*b*x+c
+
+    {
+    SOLVE([a·x1^3 + b·x1*x1 + c·x1 + d = y1, a·x2^3 + b·x2^2 + c·x2 + d = y2, 3·a·x1·x1 + 2·b·ox + c = od1, a·x3^3 + b·x3^2 + c·x3 + d = y3], [b, a, c, d])
+    }
+    fr:=((x1*x1-2*x1*x3+x3*x3)*(x1*x1-2*x1*x2+x2*x2)*(x2-x3));
+    if abs(fr)<DiagramEpsilon then exit;
+    fr:=1/fr;
+    //TODO: optimize/make human readable
+    a:=fr*(od1*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*(y2-y3)-2*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*(y1-y3)+x3*x3*(y2-y1));
+    b:=-fr*(od1*(x1*x1*x1-x1*(x2*x2+x2*x3+x3*x3)+x2*x3*(x2+x3))*(x2-x3)+2*x1*x1*x1*(y2-y3)-3*x1*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1));
+    c:=fr*(od1*(x2-x3)*(x1*x1*x1*(x2+x3)-x1*x1*(x2*x2+x2*x3+x3*x3)+x2*x2*x3*x3)+x1*(x1*x1*x1*(y2-y3)-3*x1*(x2*x2*(y1-y3)+x3*x3*(y2-y1))+2*(x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1))));
+    d:=-fr*(od1*x1*x2*x3*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*x1*x1*(x3*y2-x2*y3)+2*x1*x1*x1*(x2*x2*y3-x3*x3*y2)-x1*x1*(x2*x2*x2*y3+3*x2*x2*x3*y1-3*x2*x3*x3*y1-x3*x3*x3*y2)+2*x1*x2*x3*y1*(x2+x3)*(x2-x3)-x2*x2*x3*x3*y1*(x2-x3));
+(* For smooth second derivate, ignoring third  point:
+    {
+    SOLVE([a·x1^3 + b·x1*x1 + c·x1 + d = y1, a·x2^3 + b·x2^2 + c·x2 + d = y2, 3·a·x1·x1 + 2·b·x1 + c = od1, 6*a*x1+2*b=od2], [b, a, c, d])
+    }
+{    fr:=((x1*x1-2*x1*x3+x3*x3)*(x1*x1-2*x1*x2+x2*x2)*(x2-x3));
+    if abs(fr)<DiagramEpsilon then exit;
+    fr:=1/fr;}
+    //TODO: optimize
+    a := - 0.5*(2*od1*(x1 - x2) - od2*(x1*x1 - 2*x1*x2 + x2*x2) - 2*(y1 - y2))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
+    b := 0.5*(6*od1*x1*(x1 - x2) - od2*(2*x1*x1*x1 - 3*x1*x1*x2 + x2*x2*x2) + 6*x1*(y2 - y1))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
+    c := 0.5*(x1*(od2*(x1*x1*x1 - 3*x1*x2*x2 + 2*x2*x2*x2) + 6*x1*(y1 - y2)) - 2*od1*(2*x1*x1*x1 - 3*x1*x2*x2 + x2*x2*x2))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
+    d := 0.5*(2*od1*x1*x2*(2*x1*x1 - 3*x1*x2 + x2*x2) - od2*x1*x1*x2*(x1*x1 - 2*x1*x2 + x2*x2) + 2*(x1*x1*x1*y2 - 3*x1*x1*x2*y1 + 3*x1*x2*x2*y1 - x2*x2*x2*y1))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);*)
+  end;
+end;
+
+{  Axis }
 
 procedure TAxis.doModified(sender:tobject);
 begin
@@ -498,7 +549,7 @@ begin
     end;}
     //Count of intervals: (max-min) / resolution
     //Size   "     "    : imageSize / Count
-    if IsInfinite(rmin) or IsInfinite(rmax) or IsNan(rmin) or IsNan(rmax) then begin
+    if IsInfinite(rmin) or IsInfinite(rmax) or IsNan(rmin) or IsNan(rmax) or (realSize=0) then begin
       resolution:=NaN;
       exit;
     end;
@@ -567,6 +618,20 @@ begin
   title:='data row';
 end;
 
+procedure TDataList.assign(list: TDataList);
+begin
+  color:=list.color;
+  title:=list.title;
+  points:=list.points;
+  Setlength(points,length(points));//copy
+  pointCount:=list.pointCount;
+  MaxX:=list.maxX;
+  minX:=list.minX;
+  maxY:=list.maxY;
+  minY:=list.minY;
+  if assigned(owner) then owner.doModified;
+end;
+
 procedure TDataList.clear(keepMemory: boolean=false);
 begin
   if not keepMemory then setlength(points,0);
@@ -575,7 +640,7 @@ begin
   minX:=PInfinity;
   maxY:=MInfinity;
   minY:=PInfinity;
-  if assigned(owner) then owner.modified;
+  if assigned(owner) then owner.doModified;
 end;
 
 function TDataList.count: longint;
@@ -595,7 +660,7 @@ begin
     pointCount:=1;
     points[0].x:=x;
     points[0].y:=y;
-    if assigned(owner) then owner.modified;
+    if assigned(owner) then owner.doModified;
     exit(0);
   end;
   if pointCount=length(points) then begin //resize
@@ -608,7 +673,7 @@ begin
       if points[i].x=x then begin
         if points[i].y<>y then begin
           points[i].y:=y;    //this could break the minY/maxY
-          if assigned(owner) then owner.modified;
+          if assigned(owner) then owner.doModified;
         end;
         exit(i);
       end else if points[i].x>x then break;
@@ -622,7 +687,7 @@ begin
   end;
   points[i].x:=x;
   points[i].y:=y;
-  if assigned(owner) then owner.modified;
+  if assigned(owner) then owner.doModified;
   result:=i;
 end;
 function TDataList.addPoint(y:float):longint;
@@ -640,7 +705,7 @@ begin
   points[j].y:=y;
   if wasBorder then rescanYBorder;
   result:=resortPoint(j);
-  if assigned(owner) then owner.modified;
+  if assigned(owner) then owner.doModified;
 end;
 
 procedure TDataList.removePoint(j: longint);
@@ -653,7 +718,7 @@ begin
       maxX:=points[pointCount-1].x;
       if (maxY<=points[j].y) or (minY>=points[j].y) then rescanYBorder;
     end;
-    if assigned(owner) then owner.modified;
+    if assigned(owner) then owner.doModified;
     exit;
   end;
   wasBorder:=(points[j].y<=minY) or (points[j].y>=maxY);
@@ -661,7 +726,7 @@ begin
   pointCount-=1;
   if j=0 then minX:=points[0].x;
   if wasBorder then rescanYBorder;
-  if assigned(owner) then owner.modified;
+  if assigned(owner) then owner.doModified;
 end;
 
 //==================================================================================
@@ -713,98 +778,6 @@ begin
   doModified;
 end;
 
-procedure TDiagramDrawer.calculateSplines();
-//taken from Wikipedia
-var r,i,n,im:longint;
-    xpi,xi,l,alpha:float;
-    h,z,my: array of float;
-begin
-  SetLength(FSplines,FModel.dataRows);
-  for r:=0 to high(FSplines) do begin
-    n:=FModel.dataPoints(r);
-    setlength(FSplines[r],n);
-    if n<=1 then continue;
-    setlength(z,n);
-    setlength(my,n);
-    setlength(h,n);
-    fmodel.data(r,0,xi,FSplines[r,0].d);
-    for i:=0 to n-2 do begin
-      fmodel.data(r,i+1,xpi,FSplines[r,i+1].d );
-      h[i]:=xpi-xi;
-      xi:=xpi;
-    end;
-    my[0]:=0;z[0]:=0;z[n-1]:=0;
-    im:=0;
-    for i:=1 to n-2 do begin
-      l:=2*(h[i]+h[im]) - h[im]*my[im];
-      my[i]:=h[i]/l;
-      if abs(h[i])<DiagramEpsilon then
-        z[i]:=z[i-1]
-      else begin
-        alpha:=3*(FSplines[r,i+1].d-FSplines[r,i].d)/h[i] - 3*(FSplines[r,i].d-FSplines[r,i-1].d)/h[im];
-        z[i]:=(alpha-h[im]*z[im])/l;
-        im:=i;
-      end;
-    end;
-    FSplines[r,n-1].b:=0;
-    im:=n-1;
-    for i:=n-2 downto 0 do begin
-      FSplines[r,i].b:=z[i] - my[i]*FSplines[r,i+1].b;
-      if abs(h[i])< DiagramEpsilon then begin
-        FSplines[r,i].c:=FSplines[r,i+1].c;
-        FSplines[r,i].a:=FSplines[r,i+1].a;
-      end else begin
-        FSplines[r,i].c:=(FSplines[r,i+1].d-FSplines[r,i].d)/h[i] - h[i]*(FSplines[r,i+1].b+2*FSplines[r,i].b)/3;
-        FSplines[r,i].a:=(FSplines[r,i+1].b-FSplines[r,i].b)/(3*h[i]);
-        im:=i;
-      end;
-    end;
-  end;
-end;
-
-procedure TDiagramDrawer.updateSpline3P(var spline: TDiagramSplinePiece;
-  const x1,y1,x2,y2,x3,y3: float);
-//P(x1) = y1, P(x2) = y2, P(x3) = y3
-//P'(x1) = P0'(x1)
-var od1, fr: float;
-begin
-  with spline do begin
-    od1:= (3*a*x1+2*b)*x1+c; //P0'(ox) = 3*a*x*x+2*b*x+c
-
-    {
-    SOLVE([a·x1^3 + b·x1*x1 + c·x1 + d = y1, a·x2^3 + b·x2^2 + c·x2 + d = y2, 3·a·x1·x1 + 2·b·ox + c = od1, a·x3^3 + b·x3^2 + c·x3 + d = y3], [b, a, c, d])
-    }
-    fr:=((x1*x1-2*x1*x3+x3*x3)*(x1*x1-2*x1*x2+x2*x2)*(x2-x3));
-    if abs(fr)<DiagramEpsilon then exit;
-    fr:=1/fr;
-    //TODO: optimize
-    a:=fr*(od1*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*(y2-y3)-2*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*(y1-y3)+x3*x3*(y2-y1));
-    b:=-fr*(od1*(x1*x1*x1-x1*(x2*x2+x2*x3+x3*x3)+x2*x3*(x2+x3))*(x2-x3)+2*x1*x1*x1*(y2-y3)-3*x1*x1*(x2*(y1-y3)+x3*(y2-y1))+x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1));
-    c:=fr*(od1*(x2-x3)*(x1*x1*x1*(x2+x3)-x1*x1*(x2*x2+x2*x3+x3*x3)+x2*x2*x3*x3)+x1*(x1*x1*x1*(y2-y3)-3*x1*(x2*x2*(y1-y3)+x3*x3*(y2-y1))+2*(x2*x2*x2*(y1-y3)+x3*x3*x3*(y2-y1))));
-    d:=-fr*(od1*x1*x2*x3*(x1*x1-x1*(x2+x3)+x2*x3)*(x2-x3)+x1*x1*x1*x1*(x3*y2-x2*y3)+2*x1*x1*x1*(x2*x2*y3-x3*x3*y2)-x1*x1*(x2*x2*x2*y3+3*x2*x2*x3*y1-3*x2*x3*x3*y1-x3*x3*x3*y2)+2*x1*x2*x3*y1*(x2+x3)*(x2-x3)-x2*x2*x3*x3*y1*(x2-x3));
-(* For smooth second derivate, ignoring third  point:
-    {
-    SOLVE([a·x1^3 + b·x1*x1 + c·x1 + d = y1, a·x2^3 + b·x2^2 + c·x2 + d = y2, 3·a·x1·x1 + 2·b·x1 + c = od1, 6*a*x1+2*b=od2], [b, a, c, d])
-    }
-{    fr:=((x1*x1-2*x1*x3+x3*x3)*(x1*x1-2*x1*x2+x2*x2)*(x2-x3));
-    if abs(fr)<DiagramEpsilon then exit;
-    fr:=1/fr;}
-    //TODO: optimize
-    a := - 0.5*(2*od1*(x1 - x2) - od2*(x1*x1 - 2*x1*x2 + x2*x2) - 2*(y1 - y2))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
-    b := 0.5*(6*od1*x1*(x1 - x2) - od2*(2*x1*x1*x1 - 3*x1*x1*x2 + x2*x2*x2) + 6*x1*(y2 - y1))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
-    c := 0.5*(x1*(od2*(x1*x1*x1 - 3*x1*x2*x2 + 2*x2*x2*x2) + 6*x1*(y1 - y2)) - 2*od1*(2*x1*x1*x1 - 3*x1*x2*x2 + x2*x2*x2))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);
-    d := 0.5*(2*od1*x1*x2*(2*x1*x1 - 3*x1*x2 + x2*x2) - od2*x1*x1*x2*(x1*x1 - 2*x1*x2 + x2*x2) + 2*(x1*x1*x1*y2 - 3*x1*x1*x2*y1 + 3*x1*x2*x2*y1 - x2*x2*x2*y1))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);*)
-  end;
-end;
-
-function TDiagramDrawer.calcSpline(const spline: TDiagramSplinePiece;
-  const x: float):float;
-begin
-  //result:=a*x*x*x+b*x*x+c*x+d;
-  with spline do
-    result:=((a*x+b)*x+c)*x+d;
-end;
-
 procedure TDiagramDrawer.doModified;
 begin
   FLayoutModified:=true;
@@ -815,7 +788,7 @@ procedure TDiagramDrawer.SetAutoSetRangeX(const AValue: boolean);
 begin
   if FAutoSetRangeX=AValue then exit;
   FAutoSetRangeX:=AValue;
-  if assigned(fmodel) then fmodel.fmodified:=true;  //cause full update
+  if assigned(fmodel) then fmodelModified:=true;  //cause full update
   doModified;
 end;
 
@@ -823,7 +796,7 @@ procedure TDiagramDrawer.SetAutoSetRangeY(const AValue: boolean);
 begin
   if FAutoSetRangeY=AValue then exit;
   FAutoSetRangeY:=AValue;
-  if assigned(fmodel) then fmodel.fmodified:=true;  //cause full update
+  if assigned(fmodel) then fmodelModified:=true;  //cause full update
   doModified;
 end;
 
@@ -853,7 +826,10 @@ procedure TDiagramDrawer.SetLineStyle(const AValue: TLineStyle);
 begin
   if FLineStyle=AValue then exit;
   FLineStyle:=AValue;
-  SetLength(FSplines,0);
+  if assigned(fmodel) then begin
+    SetLength(fmodel.FSplines,0);
+    FModel.FmodifiedSinceSplineCalc:=true;
+  end;
   doModified;
 end;
 
@@ -900,6 +876,12 @@ begin
   fRangeMaxY:=100;
   FAutoSetRangeX:=true;
   FAutoSetRangeY:=true;
+  fvalueAreaX:=0;
+  FValueAreaY:=0;
+  FValueAreaWidth:=fdiagram.width;
+  FValueAreaRight:=fdiagram.width;
+  FValueAreaHeight:=fdiagram.height;
+  FValueAreaBottom:=fdiagram.height;
 end;
 
 destructor TDiagramDrawer.destroy;
@@ -982,7 +964,8 @@ var
     canvas.MoveTo(x,y);
     i:=0;
     lx:=FModel.dataX(id,0);
-    nx:=FModel.dataX(id,i+1);
+    if FModel.dataPoints(id)>1 then nx:=FModel.dataX(id,1)
+    else nx:=lx+10;
     for x:=translateX(FModel.minX(id)) to translateX(FModel.maxX(id)) do begin
       fx:=translateXBack(x);
       if fx>=nx then begin
@@ -994,7 +977,7 @@ var
         end;
         if i>=FModel.dataPoints(id)-1 then break;
       end;
-      canvas.LineTo(x,translateY(calcSpline(FSplines[id,i],fx-lx)));
+      canvas.LineTo(x,translateY(calcSpline(fmodel.FSplines[id,i],fx-lx)));
     end;
   end;
 
@@ -1097,7 +1080,7 @@ var
     canvas.LineTo(posX,FValueAreaBottom);
     res:=axis.resolution;
     if IsNan(res) or IsInfinite(res)or(res<=0) then
-      res:=round((xend-xstart) / 10);
+      res:=round((yend-ystart) / 10);
     p:=ystart;
     while p<=yend do begin
       caption:=axis.doTranslate(p);
@@ -1129,6 +1112,7 @@ var i,j,pos,legendX:longint;
 begin
   result:=Diagram;
   canvas:=result.canvas;
+  if Diagram.Height=0 then exit;
   if not assigned(FMOdel) then exit;
 
   textHeightC:=result.Canvas.TextHeight(',gqpHTMIT');
@@ -1159,25 +1143,32 @@ begin
 
   FValueAreaWidth:=FValueAreaRight- FValueAreaX;
   FValueAreaHeight:=FValueAreaBottom-FValueAreaY;
+  if FValueAreaWidth<=0 then exit;
+  if FValueAreaHeight<=0 then exit;
   //setup ranges
-  if FAutoSetRangeX then
-    if fmodel.dataRows>0 then begin
+  if fmodel.dataRows>0 then begin
+    if FAutoSetRangeX then begin
       FRangeMinX:=fmodel.minX;
+      if IsInfinite(FRangeMinX) or IsNan(FRangeMinX) then FRangeMinX:=0;
       FRangeMaxX:=fmodel.maxX;
-      if FRangeMaxX<=FRangeMinX then FRangeMaxX:=FRangeMinX+5;
-      if FLAxis.rangePolicy=rpAuto then FLAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
-      if FYMAxis.rangePolicy=rpAuto then FYMAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
-      if FRAxis.rangePolicy=rpAuto then FRAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+      if IsInfinite(FRangeMaxX) or IsNan(FRangeMaxX) or (FRangeMaxX<=FRangeMinX) then
+        FRangeMaxX:=FRangeMinX+5;
     end;
-  if FAutoSetRangeY then
-    if fmodel.dataRows>0 then begin
+    if FTAxis.rangePolicy=rpAuto then FTAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    if FXMAxis.rangePolicy=rpAuto then FXMAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    if FBAxis.rangePolicy=rpAuto then FBAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    if FAutoSetRangeY then begin
       FRangeMinY:=fmodel.minY;
+      if IsInfinite(FRangeMinY) or IsNan(FRangeMinY) then
+        FRangeMinY:=0;
       FRangeMaxY:=fmodel.maxY;
-      if FRangeMaxY<=FRangeMinY then FRangeMaxY:=FRangeMinY+5;
-      if FTAxis.rangePolicy=rpAuto then FTAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
-      if FXMAxis.rangePolicy=rpAuto then FXMAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
-      if FBAxis.rangePolicy=rpAuto then FBAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+      if IsInfinite(FRangeMaxY) or IsNan(FRangeMaxY) or (FRangeMaxY<=FRangeMinY) then
+        FRangeMaxY:=FRangeMinY+5;
     end;
+    if FLAxis.rangePolicy=rpAuto then FLAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+    if FYMAxis.rangePolicy=rpAuto then FYMAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+    if FRAxis.rangePolicy=rpAuto then FRAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
+  end;
   xstart:=RangeMinX;
   xend:=RangeMaxX;
   xfactor:=FValueAreaWidth / (xend-xstart);
@@ -1205,8 +1196,8 @@ begin
     if FXMAxis.Visible then drawHorzAxis(FXMAxis,fvalueAreaY+FValueAreaHeight div 2,false);
 
     //Draw Values
-    if (LineStyle=lsCubicSpline) and ((FModel.fmodified) or (length(FSplines)=0)) then
-      calculateSplines();
+    if (LineStyle=lsCubicSpline) and (FModel.FmodifiedSinceSplineCalc) then
+      fmodel.calculateSplines();
     for i:=0 to FModel.dataRows-1 do begin
       if fModel.dataPoints(i)=0 then continue;
       FModel.setupCanvasForData(i,canvas);
@@ -1299,82 +1290,87 @@ begin
   result:=abs((RangeMaxY-RangeMinY) / FValueAreaHeight);
 end;
 
-function TDiagramDrawer.lineYatX(i:longint; const x: float): float;
-var j:longint;
-    x0,y0,x1,y1,x2,y2: float;
-    spline: TDiagramSplinePiece;
-begin
-  if not Assigned(FModel) then exit(nan);
-  if FModel.dataPoints(i)=0 then exit(nan);
-  if FModel.dataPoints(i)=1 then exit(FModel.dataY(i,0));
-  if x<FModel.minX(i) then exit(FModel.dataY(i,0));
-  if x>FModel.maxX(i) then exit(FModel.dataY(i,FModel.dataPoints(i)-1));
-  case LineStyle of
-    lsNone, lsLinear: begin
-      FModel.data(i,0,x1,y1);
-      for j:=1 to FModel.dataPoints(i)-1 do begin
-        FModel.data(i,j,x2,y2);
-        if (x>=x1) and  (x<=x2) then
-          if abs(x1-x2)>DiagramEpsilon then exit((x-x1)*(y2-y1)/(x2-x1)+y1)
-          else exit((y1+y2)/2); //better not really correct result than crash
-        x1:=x2;y1:=y2;
-      end;
-    end;
-    lsCubicSpline: begin
-      FModel.data(i,0,x1,y1);
-      for j:=1 to FModel.dataPoints(i)-1 do begin
-        FModel.data(i,j,x2,y2);
-        if (x>=x1) and  (x<=x2) then
-          exit(calcSpline(FSplines[i,j-1],x-x1));
-        x1:=x2;y1:=y2;
-      end;
-    end;
-    lsLocalCubicSpline: begin
-      FModel.data(i,0,x1,y1);
-      FModel.data(i,1,x2,y2);
-      FillChar(spline,sizeof(spline),0);
-      updateSpline3P(spline,x1-2*(x2-x1),y1,x1,y1,x2,y2);
-      for j:=1 to fModel.dataPoints(i)-1 do begin
-        //next point
-        x0:=x1;y0:=y1;
-        x1:=x2;y1:=y2;
-        FModel.data(i,j,x2,y2);
-        updateSpline3P(spline,x0,y0,x1,y1,x2,y2);
-        if (x>=x0) and (x<=x1) then
-          exit(calcSpline(spline,x));
-      end;
-      //last point with connection to virtual point far right
-      updateSpline3P(spline,x1,y1,x2,y2,x2+2*(x2-x1),y2);
-      //draw spline
-      if (x>=x1) and (x<=x2) then
-        exit(calcSpline(spline,x));
-    end;
-  end;
-  result:=nan;
-end;
-
-function TDiagramDrawer.findLine(const x, y: float; const ytolerance: float
-  ): longint;
-var i:longint;
-    ly: float;
-begin
-  for i:=0 to FModel.dataRows-1 do begin
-    if (x<FModel.minX(i)) or (x>FModel.maxX(i)) then continue;
-    ly:=lineYatX(i,x);
-    if isNan(ly) then continue;
-    if abs(ly-y) <= ytolerance then exit(i);
-  end;
-  result:=-1;
-end;
-
 { TAbstractDiagramModel }
 
 
-procedure TAbstractDiagramModel.modified;
+procedure TAbstractDiagramModel.doModified;
 begin
-  fmodified:=true;
-  if assigned(fmodifiedEvent) then fmodifiedEvent(self);
+  FmodifiedSinceSplineCalc:=true;
+  fmodifiedEvents.CallNotifyEvents(self);
 end;
+
+constructor TAbstractDiagramModel.create;
+begin
+  fmodifiedEvents:=TMethodList.Create;
+end;
+
+destructor TAbstractDiagramModel.destroy;
+begin
+  fmodifiedEvents.free;
+  inherited destroy;
+end;
+
+
+procedure TAbstractDiagramModel.calculateSplines();
+//taken from Wikipedia
+var r,i,n,im:longint;
+    xpi,xi,l,alpha:float;
+    h,z,my: array of float;
+begin
+  FmodifiedSinceSplineCalc:=false;
+  SetLength(FSplines,dataRows);
+  for r:=0 to high(FSplines) do begin
+    n:=dataPoints(r);
+    setlength(FSplines[r],n);
+    if n=0 then continue;
+    if n<=1 then begin
+      FSplines[r,0].d:=dataY(r,0);
+      FSplines[r,0].a:=0;
+      FSplines[r,0].b:=0;
+      FSplines[r,0].c:=0;
+      continue;
+    end;
+    setlength(z,n);
+    setlength(my,n);
+    setlength(h,n);
+    data(r,0,xi,FSplines[r,0].d);
+    for i:=0 to n-2 do begin
+      data(r,i+1,xpi,FSplines[r,i+1].d );
+      h[i]:=xpi-xi;
+      xi:=xpi;
+    end;
+    my[0]:=0;z[0]:=0;z[n-1]:=0;
+    im:=0;
+    for i:=1 to n-2 do begin
+      l:=2*(h[i]+h[im]) - h[im]*my[im];
+      my[i]:=h[i]/l;
+      if abs(h[i])<DiagramEpsilon then
+        z[i]:=z[i-1]
+      else if abs(h[im])<DiagramEpsilon then begin
+        z[i]:=z[i-1];
+        im:=i;
+      end else begin
+        alpha:=3*(FSplines[r,i+1].d-FSplines[r,i].d)/h[i] - 3*(FSplines[r,i].d-FSplines[r,i-1].d)/h[im];
+        z[i]:=(alpha-h[im]*z[im])/l;
+        im:=i;
+      end;
+    end;
+    FSplines[r,n-1].b:=0;
+    im:=n-1;
+    for i:=n-2 downto 0 do begin
+      FSplines[r,i].b:=z[i] - my[i]*FSplines[r,i+1].b;
+      if abs(h[i])< DiagramEpsilon then begin
+        FSplines[r,i].c:=FSplines[r,i+1].c;
+        FSplines[r,i].a:=FSplines[r,i+1].a;
+      end else begin
+        FSplines[r,i].c:=(FSplines[r,i+1].d-FSplines[r,i].d)/h[i] - h[i]*(FSplines[r,i+1].b+2*FSplines[r,i].b)/3;
+        FSplines[r,i].a:=(FSplines[r,i+1].b-FSplines[r,i].b)/(3*h[i]);
+        im:=i;
+      end;
+    end;
+  end;
+end;
+
 
 function TAbstractDiagramModel.dataRows: longint;
 begin
@@ -1538,6 +1534,78 @@ begin
     result:=max(result,maxY(i));
 end;
 
+function TAbstractDiagramModel.lineYatX(const lineStyle:TLineStyle; i:longint; const x: float): float;
+var j:longint;
+    x0,y0,x1,y1,x2,y2: float;
+    spline: TDiagramSplinePiece;
+begin
+  if dataPoints(i)=0 then exit(nan);
+  if dataPoints(i)=1 then exit(dataY(i,0));
+  if x<minX(i) then exit(dataY(i,0));
+  if x>maxX(i) then exit(dataY(i,dataPoints(i)-1));
+  case LineStyle of
+    lsNone, lsLinear: begin
+      data(i,0,x1,y1);
+      for j:=1 to dataPoints(i)-1 do begin
+        data(i,j,x2,y2);
+        if (x>=x1) and  (x<=x2) then
+          if abs(x1-x2)>DiagramEpsilon then exit((x-x1)*(y2-y1)/(x2-x1)+y1)
+          else exit((y1+y2)/2); //better not really correct result than crash
+        x1:=x2;y1:=y2;
+      end;
+    end;
+    lsCubicSpline: begin
+      if FmodifiedSinceSplineCalc then calculateSplines();
+      data(i,0,x1,y1);
+      for j:=1 to dataPoints(i)-1 do begin
+        data(i,j,x2,y2);
+        if (x>=x1) and  (x<=x2) then
+          exit(calcSpline(FSplines[i,j-1],x-x1));
+        x1:=x2;y1:=y2;
+      end;
+    end;
+    lsLocalCubicSpline: begin
+      data(i,0,x1,y1);
+      data(i,1,x2,y2);
+      FillChar(spline,sizeof(spline),0);
+      updateSpline3P(spline,x1-2*(x2-x1),y1,x1,y1,x2,y2);
+      for j:=1 to dataPoints(i)-1 do begin
+        //next point
+        x0:=x1;y0:=y1;
+        x1:=x2;y1:=y2;
+        data(i,j,x2,y2);
+        updateSpline3P(spline,x0,y0,x1,y1,x2,y2);
+        if (x>=x0) and (x<=x1) then
+          exit(calcSpline(spline,x));
+      end;
+      //last point with connection to virtual point far right
+      updateSpline3P(spline,x1,y1,x2,y2,x2+2*(x2-x1),y2);
+      //draw spline
+      if (x>=x1) and (x<=x2) then
+        exit(calcSpline(spline,x));
+    end;
+  end;
+  result:=nan;
+end;
+
+function TAbstractDiagramModel.findLine(const lineStyle:TLineStyle; const x, y: float; const ytolerance: float
+  ): longint;
+var i:longint;
+    ly, bestdelta: float;
+begin
+  result:=-1;
+  bestdelta:=ytolerance;
+  for i:=0 to dataRows-1 do begin
+    if (x<minX(i)) or (x>maxX(i)) then continue;
+    ly:=lineYatX(lineStyle, i,x);
+    if isNan(ly) then continue;
+    if abs(ly-y) <= bestdelta then begin
+      bestdelta:=abs(ly-y);
+      result:=i;
+    end;
+  end;
+end;
+
 { TDiagramDataListModel }
 
 function TDiagramDataListModel.getDataList(i:Integer): TDataList;
@@ -1554,11 +1622,12 @@ procedure TDiagramDataListModel.SetFlags(const AValue: TModelFlags);
 begin
   if FFlags=AValue then exit;
   FFlags:=AValue;
-  modified;
+  doModified;
 end;
 
 constructor TDiagramDataListModel.create;
 begin
+  inherited;
   FLists:=TFPList.Create;
 end;
 
@@ -1589,6 +1658,13 @@ begin
       TDataList(flists[i]).free;
     FLists.Count:=c;
   end;
+end;
+
+procedure TDiagramDataListModel.deleteDataRow(i: longint);
+begin
+  lists[i].free;
+  FLists.Delete(i);
+  doModified;
 end;
 
 function TDiagramDataListModel.addDataList:TDataList;
@@ -1681,6 +1757,7 @@ end;
 
 procedure TDiagramView.modelChanged(sender:Tobject);
 begin
+  FDrawer.FModelModified:=true;
   Invalidate;
 end;
 
@@ -1693,8 +1770,9 @@ end;
 procedure TDiagramView.DoOnResize;
 begin
   FDrawer.Diagram.Width:=width;
-  FDrawer.Diagram.Height:=Height;
-  if assigned(fmodel) then FModel.fmodified:=true;
+  if height<FDrawer.Diagram.Height-FDrawer.FValueAreaHeight then FDrawer.Diagram.Height:=FDrawer.Diagram.Height-FDrawer.FValueAreaHeight
+  else FDrawer.Diagram.Height:=Height;
+  if assigned(fmodel) then FDrawer.FModelModified:=true;
   inherited DoOnResize;
 end;
 
@@ -1745,19 +1823,19 @@ end;
 procedure TDiagramView.SetModel(amodel: TAbstractDiagramModel;
   takeOwnership: boolean);
 begin
-  if assigned(fmodel) then FModel.fmodifiedEvent:=nil;
+  if assigned(fmodel) then FModel.fmodifiedEvents.Remove(TMethod(@modelChanged));
   FDrawer.SetModel(amodel,takeOwnership);
   FModel:=amodel;
   if assigned(fmodel) then begin
-    FModel.fmodifiedEvent:=@modelChanged;
-    if assigned(fmodel) then FModel.fmodified:=true;
+    FModel.fmodifiedEvents.Add(TMethod(@modelChanged));
+    if assigned(fmodel) then FDrawer.FModelModified:=true;
   end;
 end;
 
 procedure TDiagramView.paint;
 begin
   if not assigned(FDrawer.FModel) then exit;
-  if FModel.fmodified or FDrawer.FLayoutModified then
+  if FDrawer.FLayoutModified or FDrawer.FModelModified then
     FDrawer.update();
   canvas.Draw(0,0,FDrawer.Diagram);
   if not IsNan(FHighlightPoint.x) then begin
@@ -1775,7 +1853,7 @@ begin
     canvas.EllipseC(FDrawer.dataToPosX(FModel.dataX(FSelRow,FSelPoint)),FDrawer.dataToPosY(FModel.dataY(FSelRow,FSelPoint)),3,3);
   end;
 
-  FModel.fmodified:=false;
+  FDrawer.FModelModified:=false;
   FDrawer.FLayoutModified:=false;
 end;
 
@@ -1796,7 +1874,7 @@ begin
   if (eaAddPoints in FAllowedEditActions) and not FSelPointMoving then begin
     fX:=FDrawer.posToDataX(x);
     fY:=FDrawer.posToDataY(y);
-    i:=fdrawer.findLine(fx,fy,10*FDrawer.PointSize*FDrawer.pixelSizeY);
+    i:=fmodel.findLine(FDrawer.LineStyle, fx,fy,10*FDrawer.pixelSizeY);
     if i<>-1 then begin
       FSelRow:=i;
       FSelPoint:= FModel.addData(i,fx,fy);
