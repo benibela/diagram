@@ -109,10 +109,12 @@ type
   }
   TAbstractDiagramModel = class(TPersistent)
   private
+    FOnModified: TNotifyEvent;
     FSplines: array of array of TDiagramSplinePiece; //**stores a spline interpolation of the data (only if necessary)
     FmodifiedSinceSplineCalc: boolean;
     fmodifiedEvents: TMethodList;
     procedure calculateSplines(); //**< always (even if not needed) calculates a spline (O(n) memory)
+    procedure SetOnModified(const AValue: TNotifyEvent);
   protected
     procedure doModified; //**<Call when ever the model data has been changed
   public
@@ -172,6 +174,8 @@ type
     function lineYatX(const lineStyle:TLineStyle; i:longint; const x: float): float;
     //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
     function findLine(const lineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
+
+    property OnModified:TNotifyEvent read FOnModified write SetOnModified;
   end;
 
 
@@ -1369,6 +1373,14 @@ begin
       end;
     end;
   end;
+end;
+
+procedure TAbstractDiagramModel.SetOnModified(const AValue: TNotifyEvent);
+begin
+  if FOnModified=AValue then exit;
+  fmodifiedEvents.Remove(TMethod(FOnModified));
+  FOnModified:=AValue;
+  fmodifiedEvents.Add(TMethod(FOnModified));
 end;
 
 
