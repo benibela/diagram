@@ -5,7 +5,8 @@ unit diagram;
 interface
 
 uses
-  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math,FPimage,IntfGraphics,LCLType,LCLProc;
+  Classes, SysUtils, LResources, Forms, Controls, Graphics, Dialogs,math,FPimage,IntfGraphics,
+  LCLType,LCLProc,LCLIntf;
 
 type
   TAxis=class;
@@ -97,26 +98,32 @@ type
 type
   TModelFlag=(mfEditable);
   TModelFlags=set of TModelFlag;
+  TModelRowFlag=(rfFullX, rfFullY); //**< full flags draw lines across the plot
+  TModelRowFlags=set of TModelRowFlag;
+  //**lsDefault=lsNone in drawer setting, otherwise (in model settings) it means "use drawer setting"
   //**lsNone=no lines, lsLinear=the points are connected with straight lines
   //**lsCubicSpline=the points are connected with a normal cubic spline (needing O(n) additional memory)
   //**lsLocalCubicSpline=the points are connected with a pseudo cubic spline (needing no additional memory, but looks not so nicely)
-  TLineStyle=(lsNone, lsLinear, lsCubicSpline, lsLocalCubicSpline);
-  TPointStyle = (psNone, psPixel, psCircle, psRectangle, psPlus, psCross);
+  TLineStyle=(lsDefault, lsNone, lsLinear, lsCubicSpline, lsLocalCubicSpline);
+  TPointStyle = (psDefault, psNone, psPixel, psCircle, psRectangle, psPlus, psCross);
+  TFillStyle = (fsNone, fsLastOverFirst, fsMinOverMax); //**<controls if the space under a line is filled. fsLastOverFirst fills one row after one, fsMinOverMax draw each x-position separately
+  TFillGradientFlags = set of (fgGradientX, fgGradientY); //**< controls the color gradient for filling. Notice that fgGradientY is much slower since it switch to single pixel drawing (but fgGradientX makes no difference)
 
   { TAbstractDiagramModel }
 
-  {** This is the abstract class you have to implement for custom data
+  {** This is the abstract model class which stores the data to be shown
+      If you want full customization you can use it as base class, but in most cases a TDiagramDataListModel is easier
   }
   TAbstractDiagramModel = class(TPersistent)
   private
     FOnModified: TNotifyEvent;
     FSplines: array of array of TDiagramSplinePiece; //**stores a spline interpolation of the data (only if necessary)
-    FmodifiedSinceSplineCalc: boolean;
+    FmodifiedSinceSplineCalc: longint; //0: not modified, 1: modified since calculateSplines(<>lsCubicSpline), 2: modified since calculateSplines(lsCubicSpline)
     fmodifiedEvents: TMethodList;
-    procedure calculateSplines(); //**< always (even if not needed) calculates a spline (O(n) memory)
+    procedure calculateSplines(defaultLineStyle: TLineStyle); //**< calculates the splines if needed (O(n) memory)
     procedure SetOnModified(const AValue: TNotifyEvent);
   protected
-    procedure doModified; //**<Call when ever the model data has been changed
+    procedure doModified(row:longint=-1); //**<Call when ever the model data has been changed (give row=-1 if all rows are modified)
   public
     constructor create;
     destructor destroy;override;
@@ -138,16 +145,19 @@ type
     //**removes a certain data point (default does nothing)
     procedure removeData(i,j:longint);virtual;
 
-    //**returns the minimum x (default 0, you should override it)
+    //**returns the minimum x (default first data point, O(1))
     function minX(i:longint):float; virtual;
-    //**returns the maximum x (default 100, you should override it)
+    //**returns the maximum x (default last data point, O(1))
     function maxX(i:longint):float; virtual;
-    //**returns the minimum value (default scans all values)
+    //**returns the minimum value (default scans all values, O(n))
     function minY(i:longint):float; virtual;
-    //**returns the maximum value (default scans all values)
+    //**returns the maximum value (default scans all values, O(n))
     function maxY(i:longint):float; virtual;
 
     function getFlags: TModelFlags; virtual;//**<returns model flags (e.g. editable)
+    function getRowFlags(i:longint): TModelRowFlags; virtual; //**<returns flags for a given row
+    function getRowLineStyle(i:longint):TLineStyle; virtual; //**<overrides drawer line style
+    function getRowPointStyle(i:longint):TPointStyle; virtual; //**<overrides drawer line style
 
     //**Searchs the point in row i at position x,y with xtolerance, ytolerance
     //**If y is NaN, only the x position is used
@@ -171,26 +181,31 @@ type
     function maxY:float;
 
     //**this returns the position of the interpolation line (linear/cubic) in data coordinates
-    function lineYatX(const lineStyle:TLineStyle; i:longint; const x: float): float;
+    function lineApproximationAtX(const defaultLineStyle:TLineStyle; i:longint; const x: float): float;
     //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
-    function findLine(const lineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
+    function findLineApproximation(const defaultLineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
+
+
 
     property OnModified:TNotifyEvent read FOnModified write SetOnModified;
   end;
 
 
   { TDiagramDrawer }
+  TClipValues = set of (cvX, cvY);
   //**This class draws the data model into a TBitmap
   TDiagramDrawer = class(TPersistent)
   private
     FAutoSetRangeX: boolean;
     FAutoSetRangeY: boolean;
     FBackColor: TColor;
+    FClipValues: TClipValues;
     FDataBackColor: TColor;
+    FFillGradient: TFillGradientFlags;
     FLayoutModified: Boolean;
     FLineStyle: TLineStyle;
     FModifiedEvent: TNotifyEvent;
-    FFilled: boolean;
+    FFillStyle: TFillStyle;
     Flegend: TLegend;
     FModel: TAbstractDiagramModel;
     FModelModified: boolean; //don't use fmodel.modified => problem with multiple views (but drawer:1<->1:view)
@@ -208,8 +223,10 @@ type
     procedure SetAutoSetRangeX(const AValue: boolean);
     procedure SetAutoSetRangeY(const AValue: boolean);
     procedure SetBackColor(const AValue: TColor);
+    procedure SetClipValues(const AValue: TClipValues);
     procedure SetDataBackColor(const AValue: TColor);
-    procedure SetFilled(const AValue: boolean);
+    procedure SetFillGradient(const AValue: TFillGradientFlags);
+    procedure SetFillStyle(const AValue: TFillStyle);
     procedure SetLineStyle(const AValue: TLineStyle);
     procedure SetModel(const AValue: TAbstractDiagramModel);
     procedure SetPointSize(const AValue: longint);
@@ -252,15 +269,17 @@ type
     property LineStyle: TLineStyle read FLineStyle write SetLineStyle;
     property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
     property PointSize: longint read FPointSize write SetPointSize;
-    property Filled: boolean read FFilled write SetFilled;
+    property FillGradient: TFillGradientFlags read FFillGradient write SetFillGradient ;
+    property FillStyle: TFillStyle read FFillStyle write SetFillStyle;
     property Model: TAbstractDiagramModel read FModel write SetModel;
     property BackColor: TColor read FBackColor write SetBackColor;
     property DataBackColor: TColor read FDataBackColor write SetDataBackColor;
+    property ClipValues: TClipValues read FClipValues write SetClipValues;
   end;
 
 
   { TDiagramView }
-  TDiagramPointMovement=(pmStandard, pmAffectNeighbours);
+  TDiagramPointMovement=(pmSimple, pmAffectNeighbours);
   TDiagramEditAction=(eaMovePoints, eaAddPoints, eaDeletePoints);
   TDiagramEditActions=set of TDiagramEditAction;
   TDiagramView = class (TCustomControl)
@@ -297,7 +316,20 @@ type
 
   { TDataList }
 
-  TDataList=class
+  TDataList=class(TPersistent)
+  private
+    FLineStyle: TLineStyle;
+    FPointStyle: TPointStyle;
+    FRowNumber: longint;
+    FColor: TColor;
+    FFlags: TModelRowFlags;
+    Ftitle: string;
+    procedure DoModified;
+    procedure SetColor(const AValue: TColor);
+    procedure SetFlags(const AValue: TModelRowFlags);
+    procedure SetLineStyle(const AValue: TLineStyle);
+    procedure SetPointStyle(const AValue: TPointStyle);
+    procedure SetTitle(const AValue: string);
   protected
     maxX,minX,maxY,minY:float;
     owner: TAbstractDiagramModel;
@@ -307,9 +339,7 @@ type
     procedure rescanYBorder;
     function resortPoint(i:longint):integer;
   public
-    constructor create(aowner:TAbstractDiagramModel; acolor: TColor);
-    color: TColor;
-    title:string;
+    constructor create(aowner:TAbstractDiagramModel; aRowNumber: longint; acolor: TColor);
     procedure assign(list:TDataList); //**<assign another list, including colors, etc. (only the owner is excluded)
     //function getPoint(x:longint): longint;
     procedure clear(keepMemory: boolean=false); //**<removes all points, if keepMemory is true, the memory of the points is not freed
@@ -326,6 +356,12 @@ type
     procedure removePoint(j:longint);
 
     procedure point(i:longint; out x,y: float); //**<returns the data at position i
+  published
+    property Color:TColor read FColor write SetColor;
+    property Title:string read Ftitle write Settitle;
+    property Flags:TModelRowFlags read FFlags write SetFlags;
+    property LineStyle: TLineStyle read FLineStyle write SetLineStyle;
+    property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
   end;
 
   { TDiagramDataListModel }
@@ -335,7 +371,6 @@ type
     FFlags: TModelFlags;
     FLists: TFPList;
     function getDataList(i:Integer): TDataList;
-    function GetFlags: TModelFlags;override;
     procedure SetFlags(const AValue: TModelFlags);
   public
     constructor create;
@@ -373,6 +408,11 @@ type
     function minY(i:longint):float; override;overload;
     //**returns the maximum value (O(1))
     function maxY(i:longint):float; override;overload;
+
+    function GetFlags: TModelFlags;override;
+    function getRowFlags(i:longint): TModelRowFlags; override;
+    function getRowLineStyle(i:longint):TLineStyle; override;
+    function getRowPointStyle(i:longint):TPointStyle; override;
 
     property lists[i:Integer]: TDataList read getDataList; default;
   published
@@ -437,6 +477,20 @@ begin
     d := 0.5*(2*od1*x1*x2*(2*x1*x1 - 3*x1*x2 + x2*x2) - od2*x1*x1*x2*(x1*x1 - 2*x1*x2 + x2*x2) + 2*(x1*x1*x1*y2 - 3*x1*x1*x2*y1 + 3*x1*x2*x2*y1 - x2*x2*x2*y1))/(x1*x1*x1 - 3*x1*x1*x2 + 3*x1*x2*x2 - x2*x2*x2);*)
   end;
 end;
+
+//faster than byte versions
+procedure RedGreenBlue(rgb: TColor; out Red, Green, Blue: integer);
+begin
+  Red := rgb and $000000ff;
+  Green := (rgb shr 8) and $000000ff;
+  Blue := (rgb shr 16) and $000000ff;
+end;
+
+function RGBToColor(R, G, B: integer): TColor;
+begin
+  Result := (B shl 16) or (G shl 8) or R;
+end;
+
 
 {  Axis }
 
@@ -577,6 +631,46 @@ begin
   y:=points[i].y;
 end;
 
+procedure TDataList.Settitle(const AValue: string);
+begin
+  if Ftitle=AValue then exit;
+  Ftitle:=AValue;
+  doModified;
+end;
+
+procedure TDataList.DoModified;
+begin
+  if Assigned(owner) then owner.doModified(FRowNumber);
+end;
+
+procedure TDataList.SetColor(const AValue: TColor);
+begin
+  if FColor=AValue then exit;
+  FColor:=AValue;
+  doModified;
+end;
+
+procedure TDataList.SetFlags(const AValue: TModelRowFlags);
+begin
+  if FFlags=AValue then exit;
+  FFlags:=AValue;
+  DoModified;
+end;
+
+procedure TDataList.SetLineStyle(const AValue: TLineStyle);
+begin
+  if FLineStyle=AValue then exit;
+  FLineStyle:=AValue;
+  DoModified;
+end;
+
+procedure TDataList.SetPointStyle(const AValue: TPointStyle);
+begin
+  if FPointStyle=AValue then exit;
+  FPointStyle:=AValue;
+  DoModified;
+end;
+
 procedure TDataList.rescanYBorder;
 var i:longint;
 begin
@@ -611,15 +705,16 @@ begin
   maxX:=points[pointCount-1].x;
 end;
 
-constructor TDataList.create(aowner: TAbstractDiagramModel; acolor: TColor);
+constructor TDataList.create(aowner: TAbstractDiagramModel; aRowNumber: longint;acolor: TColor);
 begin
+  FRowNumber:=aRowNumber;
   owner:=aowner;
-  color:=acolor;
+  fcolor:=acolor;
   maxX:=MInfinity;
   minX:=PInfinity;
   maxY:=MInfinity;
   minY:=PInfinity;
-  title:='data row';
+  ftitle:='data row';
 end;
 
 procedure TDataList.assign(list: TDataList);
@@ -633,7 +728,7 @@ begin
   minX:=list.minX;
   maxY:=list.maxY;
   minY:=list.minY;
-  if assigned(owner) then owner.doModified;
+  if assigned(owner) then owner.doModified(FRowNumber);
 end;
 
 procedure TDataList.clear(keepMemory: boolean=false);
@@ -644,7 +739,7 @@ begin
   minX:=PInfinity;
   maxY:=MInfinity;
   minY:=PInfinity;
-  if assigned(owner) then owner.doModified;
+  if assigned(owner) then owner.doModified(FRowNumber);
 end;
 
 function TDataList.count: longint;
@@ -664,7 +759,7 @@ begin
     pointCount:=1;
     points[0].x:=x;
     points[0].y:=y;
-    if assigned(owner) then owner.doModified;
+    if assigned(owner) then owner.doModified(FRowNumber);
     exit(0);
   end;
   if pointCount=length(points) then begin //resize
@@ -677,7 +772,7 @@ begin
       if points[i].x=x then begin
         if points[i].y<>y then begin
           points[i].y:=y;    //this could break the minY/maxY
-          if assigned(owner) then owner.doModified;
+          if assigned(owner) then owner.doModified(FRowNumber);
         end;
         exit(i);
       end else if points[i].x>x then break;
@@ -691,7 +786,7 @@ begin
   end;
   points[i].x:=x;
   points[i].y:=y;
-  if assigned(owner) then owner.doModified;
+  if assigned(owner) then owner.doModified(FRowNumber);
   result:=i;
 end;
 function TDataList.addPoint(y:float):longint;
@@ -709,7 +804,7 @@ begin
   points[j].y:=y;
   if wasBorder then rescanYBorder;
   result:=resortPoint(j);
-  if assigned(owner) then owner.doModified;
+  if assigned(owner) then owner.doModified(FRowNumber);
 end;
 
 procedure TDataList.removePoint(j: longint);
@@ -722,7 +817,7 @@ begin
       maxX:=points[pointCount-1].x;
       if (maxY<=points[j].y) or (minY>=points[j].y) then rescanYBorder;
     end;
-    if assigned(owner) then owner.doModified;
+    if assigned(owner) then owner.doModified(FRowNumber);
     exit;
   end;
   wasBorder:=(points[j].y<=minY) or (points[j].y>=maxY);
@@ -730,7 +825,7 @@ begin
   pointCount-=1;
   if j=0 then minX:=points[0].x;
   if wasBorder then rescanYBorder;
-  if assigned(owner) then owner.doModified;
+  if assigned(owner) then owner.doModified(FRowNumber);
 end;
 
 //==================================================================================
@@ -812,6 +907,13 @@ begin
   doModified;
 end;
 
+procedure TDiagramDrawer.SetClipValues(const AValue: TClipValues);
+begin
+  if FClipValues=AValue then exit;
+  FClipValues:=AValue;
+  doModified;
+end;
+
 procedure TDiagramDrawer.SetDataBackColor(const AValue: TColor);
 begin
   if FDataBackColor=AValue then exit;
@@ -819,10 +921,17 @@ begin
   doModified;
 end;
 
-procedure TDiagramDrawer.SetFilled(const AValue: boolean);
+procedure TDiagramDrawer.SetFillGradient(const AValue: TFillGradientFlags);
 begin
-  if FFilled=AValue then exit;
-  FFilled:=AValue;
+  if FFillGradient=AValue then exit;
+  FFillGradient:=AValue;
+  doModified;
+end;
+
+procedure TDiagramDrawer.SetFillStyle(const AValue: TFillStyle);
+begin
+  if FFillStyle=AValue then exit;
+  FFillStyle:=AValue;
   doModified;
 end;
 
@@ -830,10 +939,7 @@ procedure TDiagramDrawer.SetLineStyle(const AValue: TLineStyle);
 begin
   if FLineStyle=AValue then exit;
   FLineStyle:=AValue;
-  if assigned(fmodel) then begin
-    SetLength(fmodel.FSplines,0);
-    FModel.FmodifiedSinceSplineCalc:=true;
-  end;
+  if assigned(FModel) then FModel.calculateSplines(LineStyle);
   doModified;
 end;
 
@@ -886,6 +992,7 @@ begin
   FValueAreaRight:=fdiagram.width;
   FValueAreaHeight:=fdiagram.height;
   FValueAreaBottom:=fdiagram.height;
+  FFillGradient:=[fgGradientX];
 end;
 
 destructor TDiagramDrawer.destroy;
@@ -920,7 +1027,7 @@ const AXIS_SIZE=20;
       AXIS_DASH_SIZE=2;
 var xstart,ystart,xfactor,yfactor,xend,yend: float; //copied ranges
     textHeightC:longint;
-
+    RealValueRect: TRect;
   function translateX(const x:float):longint;inline;
   begin
     result:=FValueAreaX+round((x-xstart)*xfactor);
@@ -956,11 +1063,12 @@ var
     for i:=1 to fModel.dataPoints(id)-1 do begin
       getRPos(id,i,x,y);
       canvas.LineTo(x,y);
+      if x>RealValueRect.Right then break;
     end;
   end;
 
   procedure drawCubicSpline(id:longint);
-  var i,x,y:longint;
+  var i,x,y,xmax:longint;
       fx,lx,nx: float;
   begin
     //see also calculateSplines, here the splines map P [x1-x1, x2-x1] |-> [y1, y2]
@@ -970,7 +1078,11 @@ var
     lx:=FModel.dataX(id,0);
     if FModel.dataPoints(id)>1 then nx:=FModel.dataX(id,1)
     else nx:=lx+10;
-    for x:=translateX(FModel.minX(id)) to translateX(FModel.maxX(id)) do begin
+    x:=translateX(FModel.minX(id));
+    if x<RealValueRect.Left then x:=RealValueRect.Left;
+    xmax:=translateX(FModel.maxX(id));
+    if xmax>RealValueRect.Right then xmax:=RealValueRect.Right;
+    for x:=x to xmax do begin
       fx:=translateXBack(x);
       if fx>=nx then begin
         while fx>=nx do begin
@@ -1004,7 +1116,9 @@ var
       FModel.data(id,i,fx2,fy2);
       updateSpline3P(spline,fx0,fy0,fx1,fy1,fx2,fy2);
       //draw spline
-      for x:=translateX(fx0) to translateX(fx1) do
+      x:=translateX(fx0);
+      if x>RealValueRect.Right then exit;
+      for x:=x to translateX(fx1) do
         canvas.LineTo(x,translateY(calcSpline(spline,translateXBack(x))));
         //canvas.LineTo(ox+x,translateY(calcSpline(spline,x/dw)));
     end;
@@ -1018,10 +1132,17 @@ var
   procedure drawPoints(id: longint);
   var i:longint;
       x,y: longint;
+      ps:TPointStyle;
   begin
+    ps:=FModel.getRowPointStyle(id);
+    if ps=psDefault then ps:=PointStyle;
     for i:=0 to fModel.dataPoints(id)-1 do begin
       getRPos(id,i,x,y);
-      case PointStyle of
+      if rfFullX in FModel.getRowFlags(id) then
+        canvas.Line(fvalueAreaX,y,FValueAreaRight,y);
+      if rfFullY in FModel.getRowFlags(id) then
+        canvas.Line(x,fvalueAreaY,x,FValueAreaBottom);
+      case ps of
         psPixel: Canvas.Pixels[x,y]:=canvas.Pen.Color;
         psCircle: canvas.EllipseC(x,y,pointSize,pointSize);
         psRectangle: canvas.Rectangle(x-PointSize,y-PointSize,x+pointSize,y+pointSize);
@@ -1034,6 +1155,163 @@ var
           canvas.Line(x+PointSize,y-PointSize,x-PointSize-1,y+PointSize+1);
         end;
       end;
+    end;
+  end;
+
+  function scaleXGC(color,xpos,xmid:integer): integer;inline;
+  begin
+    result:=color-abs(color*2*(xpos-xmid)div (3*xmid));
+  end;
+  function scaleYGC(color,ypos,yvalue:integer): integer;inline;
+  begin
+    result:=(color-color div 4)*(FValueAreaBottom-ypos)div (FValueAreaBottom-yvalue)+color div 4;
+  end;
+
+//----------------------------filling drawing----------------------------
+//TODO: filling to zero line instead of bottom
+  procedure drawFillingLastOverFirst();
+  var i,x,xmax,xmid,y,yi: LongInt;
+      startColor: TColor;
+      RStart, GStart, BStart: integer;
+      tempLazImage:TLazIntfImage;
+      bitmap,tempmaskbitmap: HBITMAP;
+  begin
+    if fgGradientY in FFillGradient then begin
+      //canvas.gradientfill is too slow since the rect change on every x
+      tempLazImage:=TLazIntfImage.Create(0,0);
+      tempLazImage.LoadFromBitmap(result.Handle,0);
+    end;
+    for i:=0 to FModel.dataRows-1 do begin
+      if fModel.dataPoints(i)=0 then continue;
+      if FModel.getRowLineStyle(i)=lsNone then continue;
+      if (LineStyle=lsNone) and (FModel.getRowLineStyle(i)=lsDefault) then continue;
+
+      FModel.setupCanvasForData(i,canvas);
+      startColor:=canvas.pen.color;
+      if FFillGradient<>[] then begin
+        RedGreenBlue(startColor,RStart,GStart,BStart);
+        if fgGradientY in FFillGradient then begin //use fp color
+          RStart:=RStart + RStart shl 8;
+          GStart:=GStart + GStart shl 8;
+          BStart:=BStart + BStart shl 8;
+        end;
+      end;
+      xmax:=translateX(FModel.maxX(i));
+      if xmax>FValueAreaRight then xmax:=FValueAreaRight;
+      x:=translateX(FModel.minX(i));
+      if x>FValueAreaRight then x:=fvalueAreaX;
+      xmid:=(x+xmax) div 2;
+
+      for x:=x to xmax do begin
+        y:=translateY(fmodel.lineApproximationAtX(LineStyle,i,translateXBack(x)));
+        if fgGradientY in FFillGradient then begin
+          if y<0 then y:=0;
+          if fgGradientX in FFillGradient then begin
+            for yi:=y to FValueAreaBottom-1 do
+              tempLazImage[x,yi]:=FPColor(scaleYGC(scaleXGC(RStart,x,xmid),yi,y),
+                                          scaleYGC(scaleXGC(GStart,x,xmid),yi,y),
+                                          scaleYGC(scaleXGC(BStart,x,xmid),yi,y));
+          end else for yi:=y to FValueAreaBottom-1 do
+            tempLazImage[x,yi]:=FPColor(scaleYGC(RStart,yi,y),scaleYGC(GStart,yi,y),scaleYGC(BStart,yi,y));
+        end else begin
+          if fgGradientX in FFillGradient then
+            canvas.pen.color:=RGBToColor(scaleXGC(RStart,x,xmid),scaleXGC(GStart,x,xmid),scaleXGC(BStart,x,xmid));
+          canvas.Line(x,y,x,FValueAreaBottom);
+        end;
+      end;
+    end;
+
+    if fgGradientY in FFillGradient then begin
+      tempLazImage.CreateBitmaps(bitmap,tempmaskbitmap,true);
+      result.Handle:=bitmap;
+      tempLazImage.Free;
+    end;
+  end;
+
+  procedure drawFillingMinOverMax();
+  var i,j,r,k,x,xmax,temp,y,yi: LongInt;
+      fx:float;
+      tempY,tempYMap,tempMaxX,tempMinX:array of longint;
+      xmid, RStart, GStart, BStart: array of longint; //needed for gradient
+      tempLazImage:TLazIntfImage;
+      bitmap,tempmaskbitmap: HBITMAP;
+  begin
+    if fgGradientY in FFillGradient then begin
+      //canvas.gradientfill is too slow since the rect change on every x
+      tempLazImage:=TLazIntfImage.Create(0,0);
+      tempLazImage.LoadFromBitmap(result.Handle,0);
+    end;
+
+    setlength(tempY, fmodel.dataRows+1);
+    setlength(tempYMap, fmodel.dataRows+1);
+    setlength(tempMinX, fmodel.dataRows);
+    setlength(tempMaxX, fmodel.dataRows);
+    if FFillGradient<>[] then begin
+      setlength(xmid, fmodel.dataRows);
+      setlength(RStart, fmodel.dataRows);
+      setlength(GStart, fmodel.dataRows);
+      setlength(BStart, fmodel.dataRows);
+    end;
+    for i:=0 to FModel.dataRows-1 do begin
+      if fModel.dataPoints(i)=0 then continue;
+      tempMinX[i]:=translateX(fmodel.minX(i));
+      tempMaxX[i]:=translateX(fmodel.maxX(i));
+      FModel.setupCanvasForData(i,canvas);
+      if FFillGradient<>[] then begin
+        xmid[i]:=(tempMinX[i] + tempMaxX[i]) div 2;
+        RedGreenBlue(canvas.pen.color,RStart[i],GStart[i],BStart[i]);
+        if fgGradientY in FFillGradient then begin //use fp color
+          RStart[i]:=RStart[i] + RStart[i] shl 8;
+          GStart[i]:=GStart[i] + GStart[i] shl 8;
+          BStart[i]:=BStart[i] + BStart[i] shl 8;
+        end;
+      end;
+    end;
+    for x:=fvalueAreaX to FValueAreaRight do begin
+      j:=0;
+      fx:=translateXBack(x);
+      for i:=0 to FModel.dataRows do begin
+        if fModel.dataPoints(i)=0 then continue;
+        if FModel.getRowLineStyle(i)=lsNone then continue;
+        if (LineStyle=lsNone) and (FModel.getRowLineStyle(i)=lsDefault) then continue;
+        if (x < tempMinX[i]) or (x>tempMaxX[i]) then continue;
+        tempY[j]:=translateY(fmodel.lineApproximationAtX(LineStyle,i,fx));
+        tempYMap[j]:=i;
+        k:=j;
+        while (k >0) and (tempY[k-1]>tempY[k]) do begin
+          temp:=tempY[k-1];tempY[k-1]:=tempY[k];tempY[k]:=temp;
+          temp:=tempYMap[k-1];tempYMap[k-1]:=tempYMap[k];tempYMap[k]:=temp;
+          k-=1;
+        end;
+        j+=1;
+      end;
+      if j=0 then continue;
+      {if tempY[j-1]<FValueAreaBottom then }tempY[j]:=FValueAreaBottom;
+      canvas.MoveTo(x,tempY[0]);
+      for i:=0 to j-1 do begin
+        r:=tempYMap[i];
+        if fgGradientY in FFillGradient then begin
+          y:=tempY[i];
+          if y<0 then y:=0;
+          if fgGradientX in FFillGradient then begin
+            for yi:=y to tempY[i+1]-1 do
+              tempLazImage[x,yi]:=FPColor(scaleYGC(scaleXGC(RStart[r],x,xmid[r]),yi,y),
+                                          scaleYGC(scaleXGC(GStart[r],x,xmid[r]),yi,y),
+                                          scaleYGC(scaleXGC(BStart[r],x,xmid[r]),yi,y));
+          end else for yi:=y to tempY[i+1]-1 do
+            tempLazImage[x,yi]:=FPColor(scaleYGC(RStart[r],yi,y),scaleYGC(GStart[r],yi,y),scaleYGC(BStart[r],yi,y));
+        end else begin
+          if fgGradientX in FFillGradient then canvas.pen.color:=RGBToColor(scaleXGC(RStart[r],x,xmid[r]),scaleXGC(GStart[r],x,xmid[r]),scaleXGC(BStart[r],x,xmid[r]))
+          else FModel.setupCanvasForData(r,canvas);
+          canvas.LineTo(x,tempY[i+1]);
+        end;
+      end;
+    end;
+
+    if fgGradientY in FFillGradient then begin
+      tempLazImage.CreateBitmaps(bitmap,tempmaskbitmap,true);
+      result.Handle:=bitmap;
+      tempLazImage.Free;
     end;
   end;
 
@@ -1109,10 +1387,7 @@ var
   end;
 
 var i,j,pos,legendX:longint;
-
-    currentColor,fpbackcolor,fplinecolor:tfpcolor;
-    tempLazImage:TLazIntfImage;
-    bitmap,maskbitmap: HBITMAP;
+    usedLineStyle: TLineStyle;
 begin
   result:=Diagram;
   canvas:=result.canvas;
@@ -1149,6 +1424,21 @@ begin
   FValueAreaHeight:=FValueAreaBottom-FValueAreaY;
   if FValueAreaWidth<=0 then exit;
   if FValueAreaHeight<=0 then exit;
+
+  if cvX in FClipValues then begin
+    RealValueRect.Left:=fvalueAreaX;
+    RealValueRect.Right:=FValueAreaRight;
+  end else begin
+    RealValueRect.Left:=0;
+    RealValueRect.Right:=result.width;
+  end;
+  if cvY in FClipValues then begin
+    RealValueRect.Top:=fvalueAreaY;
+    RealValueRect.Bottom:=FValueAreaBottom;
+  end else begin
+    RealValueRect.Top:=0;
+    RealValueRect.Bottom:=result.Height;
+  end;
   //setup ranges
   if fmodel.dataRows>0 then begin
     if FAutoSetRangeX then begin
@@ -1182,6 +1472,7 @@ begin
 
 
   with result.Canvas do begin
+    Clipping:=false;
     brush.style:=bsSolid;
     brush.color:=backColor;
     FillRect(0,0,result.Width,result.Height);
@@ -1198,44 +1489,38 @@ begin
     if FTAxis.Visible then drawHorzAxis(FTAxis,fvalueAreaY,true);
     if FBAxis.Visible then drawHorzAxis(FBAxis,FValueAreaBottom,false);
     if FXMAxis.Visible then drawHorzAxis(FXMAxis,fvalueAreaY+FValueAreaHeight div 2,false);
+                                  //SelectClipRGN GetClipBox();
+    //activate clipping    tcanvas
+    ClipRect:=RealValueRect;
+    Clipping:=FClipValues<>[];
 
     //Draw Values
-    if (LineStyle=lsCubicSpline) and (FModel.FmodifiedSinceSplineCalc) then
-      fmodel.calculateSplines();
+    if FModel.FmodifiedSinceSplineCalc<>0 then
+      fmodel.calculateSplines(LineStyle);
+                  clip
+
+    //fill values
+    case FillStyle of
+      fsLastOverFirst: drawFillingLastOverFirst();
+      fsMinOverMax: drawFillingMinOverMax();
+    end;
+
+    //draw lines + points
     for i:=0 to FModel.dataRows-1 do begin
       if fModel.dataPoints(i)=0 then continue;
       FModel.setupCanvasForData(i,canvas);
-      case LineStyle of
-        lsLinear: drawLinearLines(i);
-        lsCubicSpline: drawCubicSpline(i);
-        lsLocalCubicSpline: drawCubicSpline3P(i);
+      if fModel.dataPoints(i)>1 then begin
+        usedLineStyle:=FModel.getRowLineStyle(i);
+        if usedLineStyle=lsDefault then usedLineStyle:=LineStyle;
+        case usedLineStyle of
+          lsLinear: drawLinearLines(i);
+          lsCubicSpline: drawCubicSpline(i);
+          lsLocalCubicSpline: drawCubicSpline3P(i);
+        end;
       end;
       if PointStyle<>psNone then drawPoints(i);
     end;
 
-    //fill values
-    //TODO: problem, this overrides y-lines, this could run in dataLines*dataPoints*log dataPoints
-    if filled then begin
-      tempLazImage:=TLazIntfImage.Create(0,0);
-      tempLazImage.LoadFromBitmap(result.Handle,0);
-      fpbackcolor:=TColorToFPColor(dataBackColor);
-      if FLAxis.gridLinePen.Style<>psClear then fplinecolor:=TColorToFPColor(FLAxis.gridLinePen.Color)
-      else fplinecolor:=TColorToFPColor(clNone);
-      for i:=FValueAreaX+3 to FValueAreaRight do begin //start after horz-axis-segments
-        currentColor:=fpbackcolor;
-        for j:=FValueAreaY to FValueAreaBottom do
-          if (tempLazImage.Colors[i,j]<>fplinecolor) then begin
-            if tempLazImage.colors[i,j]=fpbackcolor then
-              tempLazImage.Colors[i,j]:=currentColor
-            else
-              currentColor:=tempLazImage.Colors[i,j];
-          end;
-      end;
-
-      tempLazImage.CreateBitmaps(bitmap,maskbitmap,true);
-      result.Handle:=bitmap;
-      tempLazImage.Free;
-    end;
 
     //draw legend
     if legend.visible then begin
@@ -1297,9 +1582,10 @@ end;
 { TAbstractDiagramModel }
 
 
-procedure TAbstractDiagramModel.doModified;
+procedure TAbstractDiagramModel.doModified(row:longint);
 begin
-  FmodifiedSinceSplineCalc:=true;
+  if (row<>-1) and (dataPoints(row)>1) then
+    FmodifiedSinceSplineCalc:=2;//it makes no sense to recalculate splines if there no lines are drawn
   fmodifiedEvents.CallNotifyEvents(self);
 end;
 
@@ -1315,15 +1601,40 @@ begin
 end;
 
 
-procedure TAbstractDiagramModel.calculateSplines();
+procedure TAbstractDiagramModel.calculateSplines(defaultLineStyle: TLineStyle);
 //taken from Wikipedia
 var r,i,n,im:longint;
     xpi,xi,l,alpha:float;
     h,z,my: array of float;
+    needSplines: boolean;
 begin
-  FmodifiedSinceSplineCalc:=false;
+  //TODO: find a way to remove the old spline data if it is no longer used (problem even if no view need them, the user app still can need them for lineApproximationAtX)
+  needSplines:=false;
+  if FmodifiedSinceSplineCalc=0 then exit;
+  if (FmodifiedSinceSplineCalc=1) and (defaultLineStyle<>lsCubicSpline) then exit;
+  for i:=0 to dataRows-1 do
+    case getRowLineStyle(i) of
+      lsDefault: if defaultLineStyle=lsCubicSpline then begin
+        needSplines:=true;
+        break;
+      end;
+      lsCubicSpline: begin
+        needSplines:=true;
+        break;
+      end;
+    end;
+  if not needSplines then begin
+    exit;//SetLength(FSplines,0);
+  end;
+  if defaultLineStyle=lsCubicSpline then FmodifiedSinceSplineCalc:=0
+  else FmodifiedSinceSplineCalc:=1;
   SetLength(FSplines,dataRows);
   for r:=0 to high(FSplines) do begin
+    if ((getRowLineStyle(i)<>lsDefault) or (defaultLineStyle<>lsCubicSpline)) and
+      (getRowLineStyle(i)<>lsCubicSpline) then begin
+      //setlength(FSplines[r],0);
+      continue;
+    end;
     n:=dataPoints(r);
     setlength(FSplines[r],n);
     if n=0 then continue;
@@ -1448,6 +1759,21 @@ begin
   result:=[];
 end;
 
+function TAbstractDiagramModel.getRowFlags(i:longint): TModelRowFlags;
+begin
+  result:=[];
+end;
+
+function TAbstractDiagramModel.getRowLineStyle(i: longint): TLineStyle;
+begin
+  Result:=lsDefault;
+end;
+
+function TAbstractDiagramModel.getRowPointStyle(i: longint): TPointStyle;
+begin
+  Result:=psDefault;
+end;
+
 function TAbstractDiagramModel.find(i: longint; const x: float;
   const y: float; const xtolerance: float; const ytolerance: float): longint;
 var j:longint;
@@ -1546,16 +1872,20 @@ begin
     result:=max(result,maxY(i));
 end;
 
-function TAbstractDiagramModel.lineYatX(const lineStyle:TLineStyle; i:longint; const x: float): float;
+function TAbstractDiagramModel.lineApproximationAtX(const defaultLineStyle:TLineStyle; i:longint; const x: float): float;
 var j:longint;
     x0,y0,x1,y1,x2,y2: float;
     spline: TDiagramSplinePiece;
+    ls:TLineStyle;
 begin
   if dataPoints(i)=0 then exit(nan);
   if dataPoints(i)=1 then exit(dataY(i,0));
   if x<minX(i) then exit(dataY(i,0));
   if x>maxX(i) then exit(dataY(i,dataPoints(i)-1));
-  case LineStyle of
+  if FmodifiedSinceSplineCalc<>0 then calculateSplines(defaultLineStyle);
+  ls:=getRowLineStyle(i);
+  if ls=lsDefault then ls:=defaultLineStyle;
+  case ls of
     lsNone, lsLinear: begin
       data(i,0,x1,y1);
       for j:=1 to dataPoints(i)-1 do begin
@@ -1567,7 +1897,6 @@ begin
       end;
     end;
     lsCubicSpline: begin
-      if FmodifiedSinceSplineCalc then calculateSplines();
       data(i,0,x1,y1);
       for j:=1 to dataPoints(i)-1 do begin
         data(i,j,x2,y2);
@@ -1600,7 +1929,7 @@ begin
   result:=nan;
 end;
 
-function TAbstractDiagramModel.findLine(const lineStyle:TLineStyle; const x, y: float; const ytolerance: float
+function TAbstractDiagramModel.findLineApproximation(const defaultLineStyle:TLineStyle; const x, y: float; const ytolerance: float
   ): longint;
 var i:longint;
     ly, bestdelta: float;
@@ -1609,7 +1938,7 @@ begin
   bestdelta:=ytolerance;
   for i:=0 to dataRows-1 do begin
     if (x<minX(i)) or (x>maxX(i)) then continue;
-    ly:=lineYatX(lineStyle, i,x);
+    ly:=lineApproximationAtX(defaultLineStyle, i,x);
     if isNan(ly) then continue;
     if abs(ly-y) <= bestdelta then begin
       bestdelta:=abs(ly-y);
@@ -1630,11 +1959,29 @@ begin
   result:=FFlags;
 end;
 
+function TDiagramDataListModel.getRowFlags(i: longint): TModelRowFlags;
+begin
+  if (i<0) or (i>=FLists.Count) then exit([]);
+  Result:=lists[i].Flags;
+end;
+
+function TDiagramDataListModel.getRowLineStyle(i: longint): TLineStyle;
+begin
+  if (i<0) or (i>=FLists.Count) then exit(lsDefault);
+  Result:=lists[i].LineStyle;
+end;
+
+function TDiagramDataListModel.getRowPointStyle(i: longint): TPointStyle;
+begin
+  if (i<0) or (i>=FLists.Count) then exit(psDefault);
+  Result:=lists[i].PointStyle;
+end;
+
 procedure TDiagramDataListModel.SetFlags(const AValue: TModelFlags);
 begin
   if FFlags=AValue then exit;
   FFlags:=AValue;
-  doModified;
+  doModified(-1);
 end;
 
 constructor TDiagramDataListModel.create;
@@ -1664,7 +2011,7 @@ begin
     i:=flists.count;
     flists.count:=c;
     for i:=i to c-1 do
-      flists[i]:=TDataList.Create(self,colors[i and $7]);
+      flists[i]:=TDataList.Create(self,i,colors[i and $7]);
   end else if flists.count>c then begin
     for i:=c to flists.count-1 do
       TDataList(flists[i]).free;
@@ -1676,13 +2023,15 @@ procedure TDiagramDataListModel.deleteDataRow(i: longint);
 begin
   lists[i].free;
   FLists.Delete(i);
-  doModified;
+  for i:=i to flists.count-1 do
+    lists[i].FRowNumber:=i;
+  doModified(-1);
 end;
 
 function TDiagramDataListModel.addDataList:TDataList;
 const colors:array[0..7] of TColor=(clBlue,clRed,clGreen,clMaroon,clFuchsia,clTeal,clNavy,clBlack);
 begin
-  Result:=TDataList.Create(self,colors[FLists.Count and $7]);
+  Result:=TDataList.Create(self,flists.count,colors[FLists.Count and $7]);
   FLists.Add(Result);
 end;
 
@@ -1886,7 +2235,7 @@ begin
   if (eaAddPoints in FAllowedEditActions) and not FSelPointMoving then begin
     fX:=FDrawer.posToDataX(x);
     fY:=FDrawer.posToDataY(y);
-    i:=fmodel.findLine(FDrawer.LineStyle, fx,fy,10*FDrawer.pixelSizeY);
+    i:=fmodel.findLineApproximation(FDrawer.LineStyle, fx,fy,10*FDrawer.pixelSizeY);
     if i<>-1 then begin
       FSelRow:=i;
       FSelPoint:= FModel.addData(i,fx,fy);
