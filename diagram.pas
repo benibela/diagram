@@ -1155,26 +1155,39 @@ var
           canvas.Line(x+PointSize,y-PointSize,x-PointSize-1,y+PointSize+1);
         end;
       end;
+      if x>RealValueRect.Right then exit;
     end;
   end;
 
-  function scaleXGC(color,xpos,xmid:integer): integer;inline;
+//----------------------------filling drawing----------------------------
+  function scaleXGC(color,xpos,xmid:integer): integer;inline; //color gradient X
   begin
     result:=color-abs(color*2*(xpos-xmid)div (3*xmid));
   end;
-  function scaleYGC(color,ypos,yvalue:integer): integer;inline;
+  function scaleYGC(color,ypos,yvalue:integer): integer;inline;//color gradient Y
   begin
     result:=(color-color div 4)*(FValueAreaBottom-ypos)div (FValueAreaBottom-yvalue)+color div 4;
   end;
+  procedure assignLazImageAndFree(lazImage: TLazIntfImage);
+  var bitmap,tempmaskbitmap: HBITMAP;
+  begin
+    lazImage.CreateBitmaps(bitmap,tempmaskbitmap,true);
+    result.Handle:=bitmap;
+    result.canvas.clipping:=FClipValues<>[];
+    if result.canvas.clipping then begin
+      result.canvas.ClipRect:=RealValueRect;
+      IntersectClipRect(result.canvas.Handle,RealValueRect.Left,RealValueRect.top,RealValueRect.Right,RealValueRect.Bottom);
+    end;
+    lazImage.Free;
+  end;
 
-//----------------------------filling drawing----------------------------
 //TODO: filling to zero line instead of bottom
+//TODO: not always clip
   procedure drawFillingLastOverFirst();
   var i,x,xmax,xmid,y,yi: LongInt;
       startColor: TColor;
       RStart, GStart, BStart: integer;
       tempLazImage:TLazIntfImage;
-      bitmap,tempmaskbitmap: HBITMAP;
   begin
     if fgGradientY in FFillGradient then begin
       //canvas.gradientfill is too slow since the rect change on every x
@@ -1199,13 +1212,13 @@ var
       xmax:=translateX(FModel.maxX(i));
       if xmax>FValueAreaRight then xmax:=FValueAreaRight;
       x:=translateX(FModel.minX(i));
-      if x>FValueAreaRight then x:=fvalueAreaX;
+      if x<fvalueAreaX then x:=fvalueAreaX;
       xmid:=(x+xmax) div 2;
 
       for x:=x to xmax do begin
         y:=translateY(fmodel.lineApproximationAtX(LineStyle,i,translateXBack(x)));
         if fgGradientY in FFillGradient then begin
-          if y<0 then y:=0;
+          if y<RealValueRect.top then y:=RealValueRect.Top;
           if fgGradientX in FFillGradient then begin
             for yi:=y to FValueAreaBottom-1 do
               tempLazImage[x,yi]:=FPColor(scaleYGC(scaleXGC(RStart,x,xmid),yi,y),
@@ -1221,11 +1234,8 @@ var
       end;
     end;
 
-    if fgGradientY in FFillGradient then begin
-      tempLazImage.CreateBitmaps(bitmap,tempmaskbitmap,true);
-      result.Handle:=bitmap;
-      tempLazImage.Free;
-    end;
+    if fgGradientY in FFillGradient then
+      assignLazImageAndFree(tempLazImage);
   end;
 
   procedure drawFillingMinOverMax();
@@ -1234,7 +1244,6 @@ var
       tempY,tempYMap,tempMaxX,tempMinX:array of longint;
       xmid, RStart, GStart, BStart: array of longint; //needed for gradient
       tempLazImage:TLazIntfImage;
-      bitmap,tempmaskbitmap: HBITMAP;
   begin
     if fgGradientY in FFillGradient then begin
       //canvas.gradientfill is too slow since the rect change on every x
@@ -1292,7 +1301,7 @@ var
         r:=tempYMap[i];
         if fgGradientY in FFillGradient then begin
           y:=tempY[i];
-          if y<0 then y:=0;
+          if y<RealValueRect.Top then y:=RealValueRect.Top;
           if fgGradientX in FFillGradient then begin
             for yi:=y to tempY[i+1]-1 do
               tempLazImage[x,yi]:=FPColor(scaleYGC(scaleXGC(RStart[r],x,xmid[r]),yi,y),
@@ -1308,11 +1317,8 @@ var
       end;
     end;
 
-    if fgGradientY in FFillGradient then begin
-      tempLazImage.CreateBitmaps(bitmap,tempmaskbitmap,true);
-      result.Handle:=bitmap;
-      tempLazImage.Free;
-    end;
+    if fgGradientY in FFillGradient then
+      assignLazImageAndFree(tempLazImage);
   end;
 
 //----------------------------Axis drawing----------------------------
@@ -1473,6 +1479,7 @@ begin
 
   with result.Canvas do begin
     Clipping:=false;
+    SelectClipRGN(canvas.Handle,0);
     brush.style:=bsSolid;
     brush.color:=backColor;
     FillRect(0,0,result.Width,result.Height);
@@ -1489,15 +1496,18 @@ begin
     if FTAxis.Visible then drawHorzAxis(FTAxis,fvalueAreaY,true);
     if FBAxis.Visible then drawHorzAxis(FBAxis,FValueAreaBottom,false);
     if FXMAxis.Visible then drawHorzAxis(FXMAxis,fvalueAreaY+FValueAreaHeight div 2,false);
-                                  //SelectClipRGN GetClipBox();
-    //activate clipping    tcanvas
+
+    //activate clipping
     ClipRect:=RealValueRect;
     Clipping:=FClipValues<>[];
+    if Clipping then begin
+      IntersectClipRect(canvas.Handle,RealValueRect.Left,RealValueRect.top,RealValueRect.Right,RealValueRect.Bottom);
+    end;
 
-    //Draw Values
+    //Calculate Spline
     if FModel.FmodifiedSinceSplineCalc<>0 then
       fmodel.calculateSplines(LineStyle);
-                  clip
+
 
     //fill values
     case FillStyle of
@@ -1524,6 +1534,10 @@ begin
 
     //draw legend
     if legend.visible then begin
+      if Clipping then begin
+        SelectClipRGN(canvas.handle,0);
+        Clipping:=false;
+      end;
       brush.style:=bsSolid;
       brush.Color:=legend.color;
       pen.color:=clBlack;
@@ -1658,7 +1672,8 @@ begin
     im:=0;
     for i:=1 to n-2 do begin
       l:=2*(h[i]+h[im]) - h[im]*my[im];
-      my[i]:=h[i]/l;
+      if abs(l)<h[i] then my[i]:=my[i-1]
+      else my[i]:=h[i]/l;
       if abs(h[i])<DiagramEpsilon then
         z[i]:=z[i-1]
       else if abs(h[im])<DiagramEpsilon then begin
