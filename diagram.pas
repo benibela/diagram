@@ -106,7 +106,7 @@ type
   //**lsLocalCubicSpline=the points are connected with a pseudo cubic spline (needing no additional memory, but looks not so nicely)
   TLineStyle=(lsDefault, lsNone, lsLinear, lsCubicSpline, lsLocalCubicSpline);
   TPointStyle = (psDefault, psNone, psPixel, psCircle, psRectangle, psPlus, psCross);
-  TFillStyle = (fsNone, fsLastOverFirst, fsMinOverMax); //**<controls if the space under a line is filled. fsLastOverFirst fills one row after one, fsMinOverMax draw each x-position separately
+  TDiagramFillStyle = (fsNone, fsLastOverFirst, fsMinOverMax); //**<controls if the space under a line is filled. fsLastOverFirst fills one row after one, fsMinOverMax draw each x-position separately
   TFillGradientFlags = set of (fgGradientX, fgGradientY); //**< controls the color gradient for filling. Notice that fgGradientY is much slower since it switch to single pixel drawing (but fgGradientX makes no difference)
 
   { TAbstractDiagramModel }
@@ -123,7 +123,7 @@ type
     procedure calculateSplines(defaultLineStyle: TLineStyle); //**< calculates the splines if needed (O(n) memory)
     procedure SetOnModified(const AValue: TNotifyEvent);
   protected
-    procedure doModified(row:longint=-1); //**<Call when ever the model data has been changed (give row=-1 if all rows are modified)
+    procedure doModified(row:longint=-1); //**<Call when ever the model data has been changed (give row=-1 if all rows are modified) (it especially important with cubic splines, because they aren't calculated if doModified isn't called)
   public
     constructor create;
     destructor destroy;override;
@@ -186,7 +186,8 @@ type
     function findLineApproximation(const defaultLineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
 
 
-
+    procedure addModifiedHandler(event: TNotifyEvent);
+    procedure removeModifiedHandler(event: TNotifyEvent);
     property OnModified:TNotifyEvent read FOnModified write SetOnModified;
   end;
 
@@ -205,7 +206,7 @@ type
     FLayoutModified: Boolean;
     FLineStyle: TLineStyle;
     FModifiedEvent: TNotifyEvent;
-    FFillStyle: TFillStyle;
+    FFillStyle: TDiagramFillStyle;
     Flegend: TLegend;
     FModel: TAbstractDiagramModel;
     FModelModified: boolean; //don't use fmodel.modified => problem with multiple views (but drawer:1<->1:view)
@@ -226,7 +227,7 @@ type
     procedure SetClipValues(const AValue: TClipValues);
     procedure SetDataBackColor(const AValue: TColor);
     procedure SetFillGradient(const AValue: TFillGradientFlags);
-    procedure SetFillStyle(const AValue: TFillStyle);
+    procedure SetFillStyle(const AValue: TDiagramFillStyle);
     procedure SetLineStyle(const AValue: TLineStyle);
     procedure SetModel(const AValue: TAbstractDiagramModel);
     procedure SetPointSize(const AValue: longint);
@@ -252,6 +253,12 @@ type
 
     property Diagram: TBitmap read FDiagram;
 
+    property valueAreaX: longint read fvalueAreaX;
+    property ValueAreaY: longint read fvalueAreaY;
+    property ValueAreaWidth: longint read FValueAreaWidth;
+    property ValueAreaHeight: longint read FValueAreaHeight;
+    property ValueAreaRight: longint read FValueAreaRight;
+    property ValueAreaBottom: longint read FValueAreaBottom;
   published
     property RangeMinX: float read FRangeMinX write SetRangeMinX;
     property RangeMaxX: float read FRangeMaxX write SetRangeMaxX;
@@ -270,7 +277,7 @@ type
     property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
     property PointSize: longint read FPointSize write SetPointSize;
     property FillGradient: TFillGradientFlags read FFillGradient write SetFillGradient ;
-    property FillStyle: TFillStyle read FFillStyle write SetFillStyle;
+    property FillStyle: TDiagramFillStyle read FFillStyle write SetFillStyle;
     property Model: TAbstractDiagramModel read FModel write SetModel;
     property BackColor: TColor read FBackColor write SetBackColor;
     property DataBackColor: TColor read FDataBackColor write SetDataBackColor;
@@ -282,6 +289,7 @@ type
   TDiagramPointMovement=(pmSimple, pmAffectNeighbours);
   TDiagramEditAction=(eaMovePoints, eaAddPoints, eaDeletePoints);
   TDiagramEditActions=set of TDiagramEditAction;
+  //**This class shows a model
   TDiagramView = class (TCustomControl)
   private
     FAllowedEditActions: TDiagramEditActions;
@@ -300,6 +308,7 @@ type
   public
     constructor create(aowner:TComponent);override;
     destructor destroy;override;
+    //**Sets the model, if takeOwnership is true, the model will automatically be freed if the view is freed
     procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean=false);
     procedure paint;override;
     procedure MouseDown(Button: TMouseButton; Shift:TShiftState; X,Y:Integer); override;
@@ -308,10 +317,46 @@ type
     procedure KeyUp(var Key: Word; Shift: TShiftState); override;
     procedure DoExit; override;
   published
+    //**Drawer drawing the diagram, use it to read/set everything relating to the visual output
     property Drawer: TDiagramDrawer read FDrawer;
+    //**Specifies how points are moved
     property PointMovement: TDiagramPointMovement read FPointMovement write SetPointMovement;
+    //**Controls how the model can be modified
     property AllowedEditActions: TDiagramEditActions read FAllowedEditActions write SetAllowedEditActions;
+    //**The model assigned to this view
     property Model: TAbstractDiagramModel read FModel write SetModel;
+
+    property OnAlignInsertBefore;
+    property OnAlignPosition;
+    property OnDockDrop;
+    property OnDockOver;
+    property OnEnter;
+    property OnExit;
+    property OnKeyDown;
+    property OnKeyPress;
+    property OnKeyUp;
+    property OnUnDock;
+    property OnUTF8KeyPress;
+
+    property OnConstrainedResize;
+    property OnContextPopup;
+    property OnDblClick;
+    property OnTripleClick;
+    property OnQuadClick;
+    property OnDragDrop;
+    property OnDragOver;
+    property OnEndDock;
+    property OnEndDrag;
+    property OnMouseDown;
+    property OnMouseMove;
+    property OnMouseUp;
+    property OnMouseEnter;
+    property OnMouseLeave;
+    property OnMouseWheel;
+    property OnMouseWheelDown;
+    property OnMouseWheelUp;
+    property OnStartDock;
+    property OnStartDrag;
   end;
 
   { TDataList }
@@ -430,6 +475,76 @@ type
     function setData(i,j:longint; const x,y:float):integer;override;
     function addData(i:longint; const x,y:float):integer;override;
     procedure removeData(i,j:longint);override;
+  end;
+
+  { TDiagramModelMerger }
+
+  TDiagramModelMerger = class(TAbstractDiagramModel)
+  private
+    FBaseModel: integer;
+    FHideCertainRows: boolean;
+    FRowVisible: array of boolean;
+    fmodels: TFPList;
+    ownerShipModels: TFPList;
+    function GetModel(i: longint): TAbstractDiagramModel;
+    function rowToRealRow(i:longint; out m, r: longint):boolean;
+    function GetRowVisible(i: integer): boolean;
+    procedure SetBaseModel(const AValue: integer);
+    procedure SetHideCertainRows(const AValue: boolean);
+    procedure SetModel(i: longint; const AValue: TAbstractDiagramModel);
+    procedure SetRowVisible(i: integer; const AValue: boolean);
+    procedure subModelModified(sender: TObject);
+  public
+    //**adds a model to the model list (if takeOwnership is true, this model is automatically freed in the destructor)
+    procedure addModel(model: TAbstractDiagramModel; takeOwnership: boolean=false);
+    //**removes an model from the list and adds a new one at this position (or at the end if oldModel don't exist)
+    procedure replaceModel(oldModel, newModel: TAbstractDiagramModel; takeOwnership: boolean=false);
+    //**removes a certain model (and frees it, if takeOwnership was true)
+    procedure removeModel(model:TAbstractDiagramModel);
+    //**removes all models (and frees them, if takeOwnership was true)
+    procedure removeAllModels();
+    //**Deletes a model
+    procedure deleteModel(i:longint);
+    //**Sets a model
+    procedure SetModel(i: longint; const AValue: TAbstractDiagramModel; takeOwnerShip: boolean=false);
+
+    property Models[i:longint]: TAbstractDiagramModel read GetModel write SetModel;
+
+    constructor create;
+    constructor create(model: TAbstractDiagramModel; takeOwnership: boolean=false);
+    constructor create(model1, model2: TAbstractDiagramModel; takeOwnership1:boolean=false; takeOwnership2: boolean=false);
+    destructor destroy;override;
+
+    //overriden model functions
+    function dataRows: longint; override;
+    function dataTitle(i:longint):string; override;
+    procedure setupCanvasForData(i:longint; c: TCanvas); override;
+    function dataPoints(i:longint):longint; override;
+    procedure data(i,j:longint; out x,y:float); override;
+    function setData(i,j:longint; const x,y:float):integer;override;
+    function addData(i:longint; const x,y:float):integer;override;
+    procedure removeData(i,j:longint);override;
+
+    function minX(i:longint):float; override;
+    function maxX(i:longint):float; override;
+    function minY(i:longint):float; override;
+    function maxY(i:longint):float; override;
+
+    function getFlags: TModelFlags; override;//**<returns model flags (e.g. editable)
+    function getRowFlags(i:longint): TModelRowFlags; override; //**<returns flags for a given row
+    function getRowLineStyle(i:longint):TLineStyle; override; //**<overrides drawer line style
+    function getRowPointStyle(i:longint):TPointStyle; override; //**<overrides drawer line style
+
+    //**This controls if there are invisible rows. Set it to false to make all rows visible
+    property HideCertainRows: boolean read FHideCertainRows write SetHideCertainRows;
+    //**If RowVisibleAt[i] is false, the row with number i is hidden
+    //**Notice that this don't track rows, e.g. if you have one hidden row and remove this one, the row with its number (= the next row, after the deleted one) will be hidden
+    //**Setting it to false for one (existing) index, sets HideCertainRows to true
+    //**And hidden rows seems to be completely removed from this model, so if row 0 is hidden, data(0,...) returns the data for row 1 (of course only if row 1 isn't hidden) (the sub models this model is based on aren't effected at all)
+    property RowVisibleAt[i:integer]: boolean read GetRowVisible write SetRowVisible;
+
+    //**Model used for row independent properies (e.g. model flags)
+    property BaseModel: integer read FBaseModel write SetBaseModel;
   end;
 implementation
 {  Math helper functions  }
@@ -798,7 +913,11 @@ end;
 function TDataList.setPoint(j: longint; const x, y: float):integer;
 var wasBorder:boolean;
 begin
-  if (j<0) or (j>=pointCount) then exit;
+  if (j<0) then exit;
+  if (j>=pointCount) then begin
+    addPoint(x,y);
+    exit;
+  end;
   wasBorder:=(points[j].y<=minY) or (points[j].y>=maxY);
   points[j].x:=x;
   points[j].y:=y;
@@ -928,7 +1047,7 @@ begin
   doModified;
 end;
 
-procedure TDiagramDrawer.SetFillStyle(const AValue: TFillStyle);
+procedure TDiagramDrawer.SetFillStyle(const AValue: TDiagramFillStyle);
 begin
   if FFillStyle=AValue then exit;
   FFillStyle:=AValue;
@@ -1072,6 +1191,8 @@ var
       fx,lx,nx: float;
   begin
     //see also calculateSplines, here the splines map P [x1-x1, x2-x1] |-> [y1, y2]
+    if (length(fmodel.FSplines) <= id) or (length(fmodel.FSplines[id])<fmodel.dataPoints(id)) then
+      exit; //wtf
     getRPos(id,0,x,y);
     canvas.MoveTo(x,y);
     i:=0;
@@ -1239,7 +1360,7 @@ var
   end;
 
   procedure drawFillingMinOverMax();
-  var i,j,r,k,x,xmax,temp,y,yi: LongInt;
+  var i,j,r,k,x,temp,y,yi: LongInt;
       fx:float;
       tempY,tempYMap,tempMaxX,tempMinX:array of longint;
       xmid, RStart, GStart, BStart: array of longint; //needed for gradient
@@ -1598,7 +1719,9 @@ end;
 
 procedure TAbstractDiagramModel.doModified(row:longint);
 begin
-  if (row<>-1) and (dataPoints(row)>1) then
+  if row=-1 then
+    FmodifiedSinceSplineCalc:=2
+  else if (row<>-1) and (dataPoints(row)>1) then
     FmodifiedSinceSplineCalc:=2;//it makes no sense to recalculate splines if there no lines are drawn
   fmodifiedEvents.CallNotifyEvents(self);
 end;
@@ -1644,8 +1767,8 @@ begin
   else FmodifiedSinceSplineCalc:=1;
   SetLength(FSplines,dataRows);
   for r:=0 to high(FSplines) do begin
-    if ((getRowLineStyle(i)<>lsDefault) or (defaultLineStyle<>lsCubicSpline)) and
-      (getRowLineStyle(i)<>lsCubicSpline) then begin
+    if ((getRowLineStyle(r)<>lsDefault) or (defaultLineStyle<>lsCubicSpline)) and
+      (getRowLineStyle(r)<>lsCubicSpline) then begin
       //setlength(FSplines[r],0);
       continue;
     end;
@@ -1913,6 +2036,8 @@ begin
     end;
     lsCubicSpline: begin
       data(i,0,x1,y1);
+      if (length(FSplines)<i) or (length(FSplines[i])<dataPoints(i)) then
+        exit(nan); //wtf
       for j:=1 to dataPoints(i)-1 do begin
         data(i,j,x2,y2);
         if (x>=x1) and  (x<=x2) then
@@ -1960,6 +2085,16 @@ begin
       result:=i;
     end;
   end;
+end;
+
+procedure TAbstractDiagramModel.addModifiedHandler(event: TNotifyEvent);
+begin
+  fmodifiedEvents.Add(TMethod(event));
+end;
+
+procedure TAbstractDiagramModel.removeModifiedHandler(event: TNotifyEvent);
+begin
+  fmodifiedEvents.Remove(TMethod(event));
 end;
 
 { TDiagramDataListModel }
@@ -2240,33 +2375,36 @@ var fx,fy:float;
 begin
   inherited mouseDown(Button, Shift, X, Y);
   if not assigned(FDrawer.FModel) then exit;
-  if (mfEditable in FModel.getFlags) and ([eaMovePoints, eaDeletePoints]*FAllowedEditActions<>[]) then begin
-    fX:=FDrawer.posToDataX(x);
-    fY:=FDrawer.posToDataY(y);
-    FSelPoint:=fmodel.findWithRow(FSelRow, fX,fY,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
-    FSelPointMoving:=FSelPoint<>-1;
-    FHighlightPoint.x:=nan;
-  end;
-  if (eaAddPoints in FAllowedEditActions) and not FSelPointMoving then begin
-    fX:=FDrawer.posToDataX(x);
-    fY:=FDrawer.posToDataY(y);
-    i:=fmodel.findLineApproximation(FDrawer.LineStyle, fx,fy,10*FDrawer.pixelSizeY);
-    if i<>-1 then begin
-      FSelRow:=i;
-      FSelPoint:= FModel.addData(i,fx,fy);
+  if mfEditable in FModel.getFlags then begin
+    if ([eaMovePoints, eaDeletePoints]*FAllowedEditActions<>[]) then begin
+      fX:=FDrawer.posToDataX(x);
+      fY:=FDrawer.posToDataY(y);
+      FSelPoint:=fmodel.findWithRow(FSelRow, fX,fY,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
       FSelPointMoving:=FSelPoint<>-1;
+      FHighlightPoint.x:=nan;
     end;
+    if (eaAddPoints in FAllowedEditActions) and not FSelPointMoving then begin
+      fX:=FDrawer.posToDataX(x);
+      fY:=FDrawer.posToDataY(y);
+      i:=fmodel.findLineApproximation(FDrawer.LineStyle, fx,fy,10*FDrawer.pixelSizeY);
+      if i<>-1 then begin
+        FSelRow:=i;
+        FSelPoint:= FModel.addData(i,fx,fy);
+        FSelPointMoving:=FSelPoint<>-1;
+      end;
+    end;
+    if eaDeletePoints in FAllowedEditActions then SetFocus;
   end;
-  if eaDeletePoints in FAllowedEditActions then SetFocus;
 end;
 
 procedure TDiagramView.mouseMove(Shift: TShiftState; X, Y: Integer);
 var i,j:longint;
     fx,fy:float;
 begin
-  inherited mouseMove(Shift, X, Y);
-  if not assigned(FModel) then exit;
-  if FModel.dataRows=0 then exit;
+  if (not assigned(FModel)) or (FModel.dataRows=0) then begin
+    inherited mouseMove(Shift, X, Y);
+    exit;
+  end;
   if (FSelPoint<>-1) and (FSelPointMoving) then begin
     //j:=fmodel.findAndGet(FSelRow, FSelPoint.X,FSelPoint.Y,2*FDrawer.PointSize*FDrawer.pixelSizeX,2*FDrawer.PointSize*FDrawer.pixelSizeY);
     {if j=-1 then begin
@@ -2292,17 +2430,18 @@ begin
       Repaint;
     end;
   end;
+  inherited mouseMove(Shift, X, Y); //so it is modified when mouse move is called
 end;
 
 procedure TDiagramView.MouseUp(Button: TMouseButton; Shift: TShiftState; X,
   Y: Integer);
 begin
-  inherited MouseUp(Button, Shift, X, Y);
   FSelPointMoving:=false;
   if (FSelPoint<>-1) and not (eaDeletePoints in FAllowedEditActions) then begin
     FSelPoint:=-1;
     repaint;
   end;
+  inherited MouseUp(Button, Shift, X, Y);
   if not assigned(FDrawer.FModel) then exit;
 end;
 
@@ -2390,6 +2529,319 @@ procedure TDiagramFixedWidthCircularDataListModel.removeData(i, j: longint);
 begin
   if (j=0) or (j=dataPoints(i)-1) then exit;
   inherited removeData(i, j);
+end;
+
+{ TDiagramModelMerger }
+
+function TDiagramModelMerger.GetRowVisible(i: integer): boolean;
+begin
+  if (i>=length(FRowVisible)) or (i<0) then exit(true);
+  result:=FRowVisible[i];
+end;
+
+procedure TDiagramModelMerger.SetBaseModel(const AValue: integer);
+begin
+  if FBaseModel=AValue then exit;
+  FBaseModel:=AValue;
+  doModified(-1);
+end;
+
+procedure TDiagramModelMerger.SetHideCertainRows(const AValue: boolean);
+begin
+  if FHideCertainRows=AValue then exit;
+  FHideCertainRows:=AValue;
+  if not AValue then SetLength(FRowVisible,0);
+end;
+
+procedure TDiagramModelMerger.SetModel(i: longint;
+  const AValue: TAbstractDiagramModel);
+begin
+  SetModel(i,AValue,false);
+end;
+
+procedure TDiagramModelMerger.SetModel(i: longint;
+  const AValue: TAbstractDiagramModel; takeOwnerShip: boolean=false);
+begin
+  if (i<0) then exit;
+  if (i>=fmodels.Count) then begin
+    addModel(AValue);
+    exit();
+  end;
+  TObject(ownerShipModels[i]).Free;
+  Models[i].removeModifiedHandler(@subModelModified);
+  fmodels[i]:=AValue;
+  if takeOwnership then ownerShipModels[i]:=AValue
+  else ownerShipModels[i]:=nil; //tricky: TObject(nil).free is valid (and does nothing)
+  AValue.addModifiedHandler(@subModelModified);
+  FmodifiedSinceSplineCalc:=max(FmodifiedSinceSplineCalc,avalue.FmodifiedSinceSplineCalc);
+  doModified(-1);
+end;
+
+procedure TDiagramModelMerger.SetRowVisible(i: integer; const AValue: boolean);
+var j:longint;
+begin
+  if i<0 then exit;
+  if i>=length(FRowVisible) then begin
+    j:=length(FRowVisible);
+    setlength(FRowVisible,i+1);
+    for j:=j to high(FRowVisible) do
+      FRowVisible[i]:=true;
+  end;
+  FRowVisible[i]:=AValue;
+end;
+
+procedure TDiagramModelMerger.subModelModified(sender: TObject);
+begin
+
+  doModified(-1);
+end;
+
+function TDiagramModelMerger.rowToRealRow(i: longint; out m, r: longint): boolean;
+var
+  j: Integer;
+begin
+  m:=-1;
+  result:=false;
+  if FHideCertainRows then begin
+    if fmodels.Count=0 then exit;
+    m:=0;
+    r:=0;
+    j:=0;
+    while m<fmodels.count do begin
+      while r<TAbstractDiagramModel(FModels[m]).dataRows do begin
+        if (j>high(FRowVisible)) or (FRowVisible[j]) then j+=1;
+        if i=j then exit;
+        r+=1;
+      end;
+      r:=0;
+      m+=1;
+    end;
+  end else for j:=0 to FModels.count-1 do
+    if i<TAbstractDiagramModel(FModels[j]).dataRows then begin
+      r:=i;
+      m:=j;
+      exit(true);
+    end else i-=TAbstractDiagramModel(FModels[j]).dataRows;
+end;
+
+function TDiagramModelMerger.GetModel(i: longint): TAbstractDiagramModel;
+begin
+  if (i<0) or (i>=fmodels.Count) then exit(nil);
+  result:=TAbstractDiagramModel(FModels[i]);
+end;
+
+procedure TDiagramModelMerger.addModel(model: TAbstractDiagramModel;
+  takeOwnership: boolean);
+begin
+  FModels.Add(model);
+  if takeOwnership then ownerShipModels.Add(model)
+  else ownerShipModels.add(nil); //tricky: TObject(nil).free is valid (and does nothing)
+  model.addModifiedHandler(@subModelModified);
+  FmodifiedSinceSplineCalc:=max(FmodifiedSinceSplineCalc,Model.FmodifiedSinceSplineCalc);
+  doModified(-1);
+end;
+
+procedure TDiagramModelMerger.replaceModel(oldModel,
+  newModel: TAbstractDiagramModel; takeOwnership: boolean);
+var i:integer;
+begin
+  i:=FModels.IndexOf(oldModel);
+  if i<0 then addModel(newModel,takeOwnership)
+  else SetModel(i,newModel,takeOwnership);
+end;
+
+procedure TDiagramModelMerger.removeModel(model: TAbstractDiagramModel);
+begin
+  deleteModel(FModels.IndexOf(model));
+end;
+
+procedure TDiagramModelMerger.removeAllModels();
+var i:longint;
+begin
+  for i:=ownerShipModels.count-1 downto 0 do
+    deleteModel(i);
+  FModels.Clear;
+  ownerShipModels.Clear;
+  doModified(-1);
+end;
+
+procedure TDiagramModelMerger.deleteModel(i: longint);
+begin
+  if (i<0) or (i>=fmodels.Count) then exit;
+  TObject(ownerShipModels[i]).Free;
+  Models[i].removeModifiedHandler(@subModelModified);
+  FModels.Delete(i);
+  ownerShipModels.Delete(i);
+  doModified(-1);
+end;
+
+constructor TDiagramModelMerger.create;
+begin
+  inherited create;
+  FModels:=TFPList.Create;
+  ownerShipModels:=TFPList.Create;
+end;
+
+constructor TDiagramModelMerger.create(model: TAbstractDiagramModel;
+  takeOwnership: boolean);
+begin
+  create;
+  addModel(model, takeOwnership);
+end;
+
+constructor TDiagramModelMerger.create(model1, model2: TAbstractDiagramModel;
+  takeOwnership1: boolean; takeOwnership2: boolean);
+begin
+  create;
+  addModel(model1, takeOwnership1);
+  addModel(model2, takeOwnership2);
+end;
+
+
+destructor TDiagramModelMerger.destroy;
+begin
+  removeAllModels();
+  FModels.Free;
+  ownerShipModels.free;
+  inherited destroy;
+end;
+
+function TDiagramModelMerger.dataRows: longint;
+var i:longint;
+begin
+  result:=0;
+  for i:=0 to FModels.Count-1 do
+    result+=TAbstractDiagramModel(FModels[i]).dataRows;
+  if FHideCertainRows then
+    for i:=0 to max(result-1,high(FRowVisible)) do
+      if not FRowVisible[i] then result-=1;
+
+end;
+
+function TDiagramModelMerger.dataTitle(i: longint): string;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit('');
+  Result:=TAbstractDiagramModel(FModels[m]).dataTitle(r);
+end;
+
+procedure TDiagramModelMerger.setupCanvasForData(i: longint; c: TCanvas);
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit();
+  TAbstractDiagramModel(FModels[m]).setupCanvasForData(r, c);
+end;
+
+function TDiagramModelMerger.dataPoints(i: longint): longint;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(0);
+  Result:=TAbstractDiagramModel(FModels[m]).dataPoints(r);
+end;
+
+procedure TDiagramModelMerger.data(i, j: longint; out x, y: float);
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then begin
+    x:=nan;
+    y:=nan;
+    exit();
+  end;
+  TAbstractDiagramModel(FModels[m]).data(r, j, x, y);
+end;
+
+function TDiagramModelMerger.setData(i, j: longint; const x, y: float
+  ): integer;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(-1);
+  Result:=TAbstractDiagramModel(FModels[m]).setData(r, j, x, y);
+end;
+
+function TDiagramModelMerger.addData(i: longint; const x, y: float): integer;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(-1);
+  Result:=TAbstractDiagramModel(FModels[m]).addData(r, x, y);
+end;
+
+procedure TDiagramModelMerger.removeData(i, j: longint);
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit();
+  TAbstractDiagramModel(FModels[m]).removeData(r, j);
+end;
+
+function TDiagramModelMerger.minX(i: longint): float;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(0);
+  Result:=TAbstractDiagramModel(FModels[m]).minX(r);
+end;
+
+function TDiagramModelMerger.maxX(i: longint): float;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(0);
+  Result:=TAbstractDiagramModel(FModels[m]).maxX(r);
+end;
+
+function TDiagramModelMerger.minY(i: longint): float;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(PInfinity);
+  Result:=TAbstractDiagramModel(FModels[m]).minY(r);
+end;
+
+function TDiagramModelMerger.maxY(i: longint): float;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(MInfinity);
+  Result:=TAbstractDiagramModel(FModels[m]).maxY(r);
+end;
+
+function TDiagramModelMerger.getFlags: TModelFlags;
+begin
+  if FModels.Count=0 then
+    exit([]);
+  if FBaseModel<=fmodels.count then
+    Result:=TAbstractDiagramModel(FModels[FBaseModel]).getFlags
+  else
+    Result:=TAbstractDiagramModel(FModels[0]).getFlags;
+end;
+
+function TDiagramModelMerger.getRowFlags(i: longint): TModelRowFlags;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit([]);
+  Result:=TAbstractDiagramModel(FModels[m]).getRowFlags(r);
+end;
+
+function TDiagramModelMerger.getRowLineStyle(i: longint): TLineStyle;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(lsDefault);
+  Result:=TAbstractDiagramModel(FModels[m]).getRowLineStyle(r);
+end;
+
+function TDiagramModelMerger.getRowPointStyle(i: longint): TPointStyle;
+var m,r: integer;
+begin
+  if not rowToRealRow(i,m,r) then
+    exit(psDefault);
+  Result:=TAbstractDiagramModel(FModels[m]).getRowPointStyle(r);
 end;
 
 end.
