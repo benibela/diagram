@@ -119,7 +119,8 @@ type
     FOnModified: TNotifyEvent;
     FSplines: array of array of TDiagramSplinePiece; //**stores a spline interpolation of the data (only if necessary)
     FmodifiedSinceSplineCalc: longint; //0: not modified, 1: modified since calculateSplines(<>lsCubicSpline), 2: modified since calculateSplines(lsCubicSpline)
-    fmodifiedEvents: TMethodList;
+    FDestroyEvents,fmodifiedEvents: TMethodList;
+
     procedure calculateSplines(defaultLineStyle: TLineStyle); //**< calculates the splines if needed (O(n) memory)
     procedure SetOnModified(const AValue: TNotifyEvent);
   protected
@@ -185,9 +186,10 @@ type
     //**finds a line like find. (since the line is 1-dimensional the x coordinate is not sufficient and has to be exact)
     function findLineApproximation(const defaultLineStyle:TLineStyle; const x,y:float; const ytolerance: float=DiagramEpsilon): longint;
 
-
     procedure addModifiedHandler(event: TNotifyEvent);
     procedure removeModifiedHandler(event: TNotifyEvent);
+    procedure addDestroyHandler(event: TNotifyEvent);
+    procedure removeDestroyHandler(event: TNotifyEvent);
     property OnModified:TNotifyEvent read FOnModified write SetOnModified;
   end;
 
@@ -300,6 +302,7 @@ type
     FDrawer: TDiagramDrawer;
     FModel: TAbstractDiagramModel;
     procedure modelChanged(sender:Tobject);
+    procedure modelDestroyed(sender:Tobject);
     procedure layoutChanged(sender:Tobject);
     procedure DoOnResize;override;
     procedure SetAllowedEditActions(const AValue: TDiagramEditActions);
@@ -386,6 +389,7 @@ type
   public
     constructor create(aowner:TAbstractDiagramModel; aRowNumber: longint; acolor: TColor);
     procedure assign(list:TDataList); //**<assign another list, including colors, etc. (only the owner is excluded)
+    procedure assign(list:TPersistent);override;
     //function getPoint(x:longint): longint;
     procedure clear(keepMemory: boolean=false); //**<removes all points, if keepMemory is true, the memory of the points is not freed
     function count:longint;
@@ -399,6 +403,9 @@ type
     function setPoint(j:longint; const x,y:float):integer;
     //**removes point j
     procedure removePoint(j:longint);
+
+    //xxreads the points from a string by calling sscanf multiple times
+    //procedure scanFStr(const s,format:string);
 
     procedure point(i:longint; out x,y: float); //**<returns the data at position i
   published
@@ -494,6 +501,7 @@ type
     procedure SetModel(i: longint; const AValue: TAbstractDiagramModel);
     procedure SetRowVisible(i: integer; const AValue: boolean);
     procedure subModelModified(sender: TObject);
+    procedure subModelDestroyed(sender: TObject);
   public
     //**adds a model to the model list (if takeOwnership is true, this model is automatically freed in the destructor)
     procedure addModel(model: TAbstractDiagramModel; takeOwnership: boolean=false);
@@ -846,6 +854,12 @@ begin
   if assigned(owner) then owner.doModified(FRowNumber);
 end;
 
+procedure TDataList.assign(list: TPersistent);
+begin
+  if list is tdatalist then assign(TDataList(list))
+  else inherited assign(list);
+end;
+
 procedure TDataList.clear(keepMemory: boolean=false);
 begin
   if not keepMemory then setlength(points,0);
@@ -946,7 +960,19 @@ begin
   if wasBorder then rescanYBorder;
   if assigned(owner) then owner.doModified(FRowNumber);
 end;
-
+ {
+procedure TDataList.scanFStr(const s, format: string);
+var c:string;
+  len: integer;
+  x,y:float;
+begin
+  clear();
+  c:=s;
+  while true do begin
+    len:=SScanf(c,format,[@x,@y]);
+    if len=0
+end;
+}
 //==================================================================================
 
 procedure TDiagramDrawer.SetModel(const AValue: TAbstractDiagramModel);
@@ -1729,10 +1755,13 @@ end;
 constructor TAbstractDiagramModel.create;
 begin
   fmodifiedEvents:=TMethodList.Create;
+  FDestroyEvents:=TMethodList.Create;
 end;
 
 destructor TAbstractDiagramModel.destroy;
 begin
+  FDestroyEvents.CallNotifyEvents(self);
+  FDestroyEvents.free;
   fmodifiedEvents.free;
   inherited destroy;
 end;
@@ -2097,6 +2126,16 @@ begin
   fmodifiedEvents.Remove(TMethod(event));
 end;
 
+procedure TAbstractDiagramModel.addDestroyHandler(event: TNotifyEvent);
+begin
+  FDestroyEvents.Add(TMethod(event));
+end;
+
+procedure TAbstractDiagramModel.removeDestroyHandler(event: TNotifyEvent);
+begin
+  FDestroyEvents.remove(TMethod(event));
+end;
+
 { TDiagramDataListModel }
 
 function TDiagramDataListModel.getDataList(i:Integer): TDataList;
@@ -2142,7 +2181,8 @@ end;
 
 destructor TDiagramDataListModel.destroy;
 begin
-  FLists.free;
+  deleteLists;
+  FLists.Free;
   inherited destroy;
 end;
 
@@ -2221,15 +2261,15 @@ end;
 
 function TDiagramDataListModel.setData(i, j: longint; const x, y: float):integer;
 begin
-  if not (mfEditable in Flags) then exit;
-  if (i<0) or (i>=FLists.Count) then exit;
+  if not (mfEditable in Flags) then exit(-1);
+  if (i<0) or (i>=FLists.Count) then exit(-1);
   result:=lists[i].setPoint(j,x,y);
 end;
 
 function TDiagramDataListModel.addData(i: longint; const x, y: float): integer;
 begin
-  if not (mfEditable in Flags) then exit;
-  if (i<0) or (i>=FLists.Count) then exit;
+  if not (mfEditable in Flags) then exit(-1);
+  if (i<0) or (i>=FLists.Count) then exit(-1);
   result:=lists[i].addPoint(x,y);
 end;
 
@@ -2270,6 +2310,11 @@ procedure TDiagramView.modelChanged(sender:Tobject);
 begin
   FDrawer.FModelModified:=true;
   Invalidate;
+end;
+
+procedure TDiagramView.modelDestroyed(sender: Tobject);
+begin
+  FModel:=nil;
 end;
 
 procedure TDiagramView.layoutChanged(sender: Tobject);
@@ -2334,12 +2379,16 @@ end;
 procedure TDiagramView.SetModel(amodel: TAbstractDiagramModel;
   takeOwnership: boolean);
 begin
-  if assigned(fmodel) then FModel.fmodifiedEvents.Remove(TMethod(@modelChanged));
+  if assigned(fmodel) then begin
+    FModel.removeModifiedHandler(@modelChanged);
+    FModel.removeDestroyHandler(@modelDestroyed);
+  end;
   FDrawer.SetModel(amodel,takeOwnership);
   FModel:=amodel;
   if assigned(fmodel) then begin
-    FModel.fmodifiedEvents.Add(TMethod(@modelChanged));
-    if assigned(fmodel) then FDrawer.FModelModified:=true;
+    FModel.addModifiedHandler(@modelChanged);
+    FModel.addDestroyHandler(@modelDestroyed);
+    FDrawer.FModelModified:=true;
   end;
 end;
 
@@ -2567,12 +2616,13 @@ begin
     addModel(AValue);
     exit();
   end;
-  TObject(ownerShipModels[i]).Free;
   Models[i].removeModifiedHandler(@subModelModified);
+  TObject(ownerShipModels[i]).Free;
   fmodels[i]:=AValue;
   if takeOwnership then ownerShipModels[i]:=AValue
   else ownerShipModels[i]:=nil; //tricky: TObject(nil).free is valid (and does nothing)
   AValue.addModifiedHandler(@subModelModified);
+  AValue.addDestroyHandler(@subModelDestroyed);
   FmodifiedSinceSplineCalc:=max(FmodifiedSinceSplineCalc,avalue.FmodifiedSinceSplineCalc);
   doModified(-1);
 end;
@@ -2592,7 +2642,13 @@ end;
 
 procedure TDiagramModelMerger.subModelModified(sender: TObject);
 begin
+  doModified(-1);
+end;
 
+procedure TDiagramModelMerger.subModelDestroyed(sender: TObject);
+begin
+  fmodels.Remove(sender);
+  ownerShipModels.Remove(sender);
   doModified(-1);
 end;
 
@@ -2637,6 +2693,7 @@ begin
   if takeOwnership then ownerShipModels.Add(model)
   else ownerShipModels.add(nil); //tricky: TObject(nil).free is valid (and does nothing)
   model.addModifiedHandler(@subModelModified);
+  model.addDestroyHandler(@subModelDestroyed);
   FmodifiedSinceSplineCalc:=max(FmodifiedSinceSplineCalc,Model.FmodifiedSinceSplineCalc);
   doModified(-1);
 end;
@@ -2668,8 +2725,9 @@ end;
 procedure TDiagramModelMerger.deleteModel(i: longint);
 begin
   if (i<0) or (i>=fmodels.Count) then exit;
-  TObject(ownerShipModels[i]).Free;
   Models[i].removeModifiedHandler(@subModelModified);
+  Models[i].removeDestroyHandler(@subModelDestroyed);
+  TObject(ownerShipModels[i]).Free;
   FModels.Delete(i);
   ownerShipModels.Delete(i);
   doModified(-1);
@@ -2699,11 +2757,14 @@ end;
 
 
 destructor TDiagramModelMerger.destroy;
+var t1,t2:TFPList;
 begin
   removeAllModels();
-  FModels.Free;
-  ownerShipModels.free;
+  t1:=fmodels;
+  t2:=ownerShipModels;
   inherited destroy;
+  t1.Free;
+  t2.free;
 end;
 
 function TDiagramModelMerger.dataRows: longint;
