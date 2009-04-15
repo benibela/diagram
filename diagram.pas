@@ -37,7 +37,9 @@ type
     property visible: boolean read Fvisible write Setvisible ;
     property Width:longint read FWidth write SetWidth ;
     property Height: longint read FHeight write SetHeight;
+    //** Background color
     property Color:TColor read FColor write SetColor;
+    //** Determines if the size is automatically calculated
     property auto: boolean read Fauto write Setauto ;
   end;
 
@@ -80,15 +82,18 @@ type
     //**this procedure tries to keep rmin+n*resolution in output coordinates constant
     procedure rangeChanged(const rmin,rmax:float; realSize: longint);
   published
+    //**Pen used to draw grids line perpendicular to the axis
     property gridLinePen: TPen read FGridLinePen write SetGridLinePen;
+    //**Color of the axis
     property linePen: TPen read FLinePen write SetLinePen;
     property min: float read Fmin write Setmin;
     property max: float read Fmax write Setmax;
     property resolution: float read Fresolution write Setresolution;
     property rangePolicy: TRangePolicy read FrangePolicy write SetrangePolicy;
+    //**Function/Event to allow customizaiton of the axis labels
     property valueTranslate: TValueTranslateEvent read FvalueTranslate write SetvalueTranslate;
     property Visible:boolean read FVisible write SetVisible;
-    property ShowText:boolean read FShowText write SetShowText;
+    //property ShowText:boolean read FShowText write SetShowText;
   end;
   TDataPoint=record
     x,y:float;
@@ -240,20 +245,21 @@ type
     procedure SetRangeMinY(const AValue: float);
   public
     constructor create;
-    function update(): TBitmap;
+    function update(): TBitmap; //**<Redraws the bitmap and returns it (and updates the Diagram property)
     destructor destroy;override;
 
     //**Sets the model to be drawn, if takeOwnership is true, then the model is freed automatically by the drawer, otherwise you have to free it yourself
     procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
 
-    function posToDataX(x: longint): float;
-    function posToDataY(y: longint): float;
-    function dataToPosX(const x: float): integer;
-    function dataToPosY(const y: float): integer;
+
+    function posToDataX(x: longint): float; //**<Translate a pixel position in the bitmap to the coordinates used by the model
+    function posToDataY(y: longint): float; //**<Translate a pixel position in the bitmap to the coordinates used by the model
+    function dataToPosX(const x: float): integer; //**<Translate model coordinates to the corresponding pixel in the bitmap (rounds)
+    function dataToPosY(const y: float): integer; //**<Translate model coordinates to the corresponding pixel in the bitmap (rounds)
     function pixelSizeX: float; //**< Returns the width of one output pixel in data coordinates
     function pixelSizeY: float; //**< Returns the height of one output pixel in data coordinates
 
-    property Diagram: TBitmap read FDiagram;
+    property Diagram: TBitmap read FDiagram; //**<Last drawn bitmap
 
     property valueAreaX: longint read fvalueAreaX;
     property ValueAreaY: longint read fvalueAreaY;
@@ -268,21 +274,21 @@ type
     property RangeMaxY: float read FRangeMaxY write SetRangeMaxY;
     property AutoSetRangeX: boolean read FAutoSetRangeX write SetAutoSetRangeX;
     property AutoSetRangeY: boolean read FAutoSetRangeY write SetAutoSetRangeY;
-    property legend:TLegend read Flegend;
-    property LeftAxis: TAxis read FLAxis;
-    property RightAxis: TAxis read FRAxis;
-    property TopAxis: TAxis read FTAxis;
-    property BottomAxis: TAxis read FBAxis;
-    property HorzMidAxis: TAxis read FXMAxis;
-    property VertMidAxis: TAxis read FYMAxis;
-    property LineStyle: TLineStyle read FLineStyle write SetLineStyle;
-    property PointStyle: TPointStyle read FPointStyle write SetPointStyle;
+    property legend:TLegend read Flegend; //**< Class for legend settings
+    property LeftAxis: TAxis read FLAxis; //**< Axis left from the value area
+    property RightAxis: TAxis read FRAxis; //**< Axis right to the value area
+    property TopAxis: TAxis read FTAxis; //**< Axis over the value area
+    property BottomAxis: TAxis read FBAxis; //**< Axis below the value area
+    property HorzMidAxis: TAxis read FXMAxis; //**< Axis from the left to the right side in the vertical mid of the value area (like the x-axis in an plot)
+    property VertMidAxis: TAxis read FYMAxis; //**< Axis from the top to the bottom side in the horizontal mid of the value area (like the x-axis in an plot)
+    property LineStyle: TLineStyle read FLineStyle write SetLineStyle; //**< Line style used to draw the lines (can be overridden by the model)
+    property PointStyle: TPointStyle read FPointStyle write SetPointStyle; //**< Point style used to draw points (can be overridden by the model)
     property PointSize: longint read FPointSize write SetPointSize;
     property FillGradient: TFillGradientFlags read FFillGradient write SetFillGradient ;
     property FillStyle: TDiagramFillStyle read FFillStyle write SetFillStyle;
     property Model: TAbstractDiagramModel read FModel write SetModel;
-    property BackColor: TColor read FBackColor write SetBackColor;
-    property DataBackColor: TColor read FDataBackColor write SetDataBackColor;
+    property BackColor: TColor read FBackColor write SetBackColor; //**<Background color around the value area
+    property DataBackColor: TColor read FDataBackColor write SetDataBackColor; //**<Background color of the value area
     property ClipValues: TClipValues read FClipValues write SetClipValues;
   end;
 
@@ -291,7 +297,7 @@ type
   TDiagramPointMovement=(pmSimple, pmAffectNeighbours);
   TDiagramEditAction=(eaMovePoints, eaAddPoints, eaDeletePoints);
   TDiagramEditActions=set of TDiagramEditAction;
-  //**This class shows a model
+  //**This class shows a model and allows the user to interact with it
   TDiagramView = class (TCustomControl)
   private
     FAllowedEditActions: TDiagramEditActions;
@@ -485,7 +491,8 @@ type
   end;
 
   { TDiagramModelMerger }
-
+  //**This model merges several models together, so they can be drawn at the same time
+  //**It can also hide certain rows
   TDiagramModelMerger = class(TAbstractDiagramModel)
   private
     FBaseModel: integer;
@@ -1732,11 +1739,13 @@ end;
 
 function TDiagramDrawer.pixelSizeX: float;
 begin
+  if FValueAreaWidth=0 then exit(1);
   result:=abs((RangeMaxX-RangeMinX) / FValueAreaWidth);
 end;
 
 function TDiagramDrawer.pixelSizeY: float;
 begin
+  if FValueAreaHeight=0 then exit(1);
   result:=abs((RangeMaxY-RangeMinY) / FValueAreaHeight);
 end;
 
