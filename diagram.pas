@@ -236,7 +236,7 @@ type
     procedure SetFillGradient(const AValue: TFillGradientFlags);
     procedure SetFillStyle(const AValue: TDiagramFillStyle);
     procedure SetLineStyle(const AValue: TLineStyle);
-    procedure SetModel(const AValue: TAbstractDiagramModel);
+    procedure SetModel(AValue: TAbstractDiagramModel);overload;
     procedure SetPointSize(const AValue: longint);
     procedure SetPointStyle(const AValue: TPointStyle);
     procedure SetRangeMaxX(const AValue: float);
@@ -249,7 +249,7 @@ type
     destructor destroy;override;
 
     //**Sets the model to be drawn, if takeOwnership is true, then the model is freed automatically by the drawer, otherwise you have to free it yourself
-    procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);
+    procedure SetModel(amodel: TAbstractDiagramModel; takeOwnership: boolean);overload;
 
 
     function posToDataX(x: longint): float; //**<Translate a pixel position in the bitmap to the coordinates used by the model
@@ -982,7 +982,7 @@ end;
 }
 //==================================================================================
 
-procedure TDiagramDrawer.SetModel(const AValue: TAbstractDiagramModel);
+procedure TDiagramDrawer.SetModel(AValue: TAbstractDiagramModel);
 begin
   SetModel(AValue,false);
 end;
