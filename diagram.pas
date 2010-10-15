@@ -1546,6 +1546,28 @@ var
     end;
   end;
 
+  function getVertAxisWidth(axis:TAxis): longint;
+  var p,res: float;
+      caption, captionOld: string;
+      newWidth: LongInt;
+  begin
+    captionOld:='';
+    result:=0;
+    res:=axis.resolution;
+    if IsNan(res) or IsInfinite(res)or(res<=0) then
+      res:=round((yend-ystart) / 10);
+    p:=ystart;
+    while p<=yend do begin
+      caption:=axis.doTranslate(p);
+      if caption<>captionOld then begin
+        captionOld:=caption;
+        newWidth := canvas.textwidth(caption);
+        if newWidth > result then result := newWidth;
+      end;
+      p+=res;
+    end;
+  end;
+
 var i,j,pos,legendX:longint;
     usedLineStyle: TLineStyle;
 begin
@@ -1568,7 +1590,7 @@ begin
   //setup output area
   FValueAreaX:=3;
   FValueAreaY:=3;
-  if FLAxis.Visible then FValueAreaX+=AXIS_SIZE;
+  if FLAxis.Visible then FValueAreaX+=3+getVertAxisWidth(FLAxis);
   if FTAxis.Visible then FValueAreaY+=AXIS_SIZE;
   FValueAreaRight:=result.Width-3;
   FValueAreaBottom:=result.Height-3;
@@ -2914,4 +2936,4 @@ begin
   Result:=TAbstractDiagramModel(FModels[m]).getRowPointStyle(r);
 end;
 
-end.
+end.
