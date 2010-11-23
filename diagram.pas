@@ -1587,33 +1587,18 @@ begin
     legend.width:=legend.width+20;
     legend.height:=(textHeightC+5)*FModel.dataRows()+5;
   end;
-  //setup output area
-  FValueAreaX:=3;
+  //setup output height
   FValueAreaY:=3;
-  if FLAxis.Visible then FValueAreaX+=3+getVertAxisWidth(FLAxis);
   if FTAxis.Visible then FValueAreaY+=AXIS_SIZE;
-  FValueAreaRight:=result.Width-3;
   FValueAreaBottom:=result.Height-3;
-  if legend.visible then FValueAreaRight-=3+legend.width;
   if FBAxis.Visible then FValueAreaBottom-=AXIS_SIZE;
-  if FRAxis.Visible then FValueAreaRight-=AXIS_SIZE;
   if (FLAxis.Visible or FRAxis.Visible) and not (FTAxis.Visible) then //don't truncate last text line
     FValueAreaY+=textHeightC div 2;
   if (FLAxis.Visible or FRAxis.Visible) and not (FBAxis.Visible) then
     FValueAreaBottom-=textHeightC div 2;
-
-  FValueAreaWidth:=FValueAreaRight- FValueAreaX;
   FValueAreaHeight:=FValueAreaBottom-FValueAreaY;
-  if FValueAreaWidth<=0 then exit;
   if FValueAreaHeight<=0 then exit;
 
-  if cvX in FClipValues then begin
-    RealValueRect.Left:=fvalueAreaX;
-    RealValueRect.Right:=FValueAreaRight;
-  end else begin
-    RealValueRect.Left:=0;
-    RealValueRect.Right:=result.width;
-  end;
   if cvY in FClipValues then begin
     RealValueRect.Top:=fvalueAreaY;
     RealValueRect.Bottom:=FValueAreaBottom;
@@ -1621,18 +1606,9 @@ begin
     RealValueRect.Top:=0;
     RealValueRect.Bottom:=result.Height;
   end;
-  //setup ranges
+
+  //setup ranges (vertical)
   if fmodel.dataRows>0 then begin
-    if FAutoSetRangeX then begin
-      FRangeMinX:=fmodel.minX;
-      if IsInfinite(FRangeMinX) or IsNan(FRangeMinX) then FRangeMinX:=0;
-      FRangeMaxX:=fmodel.maxX;
-      if IsInfinite(FRangeMaxX) or IsNan(FRangeMaxX) or (FRangeMaxX<=FRangeMinX) then
-        FRangeMaxX:=FRangeMinX+5;
-    end;
-    if FTAxis.rangePolicy=rpAuto then FTAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
-    if FXMAxis.rangePolicy=rpAuto then FXMAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
-    if FBAxis.rangePolicy=rpAuto then FBAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
     if FAutoSetRangeY then begin
       FRangeMinY:=fmodel.minY;
       if IsInfinite(FRangeMinY) or IsNan(FRangeMinY) then
@@ -1645,12 +1621,46 @@ begin
     if FYMAxis.rangePolicy=rpAuto then FYMAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
     if FRAxis.rangePolicy=rpAuto then FRAxis.rangeChanged(FRangeMinY,FRangeMaxY,FValueAreaHeight);
   end;
-  xstart:=RangeMinX;
-  xend:=RangeMaxX;
-  xfactor:=FValueAreaWidth / (xend-xstart);
   ystart:=RangeMinY;
   yend:=RangeMaxY;
   yfactor:=FValueAreaHeight / (yend-ystart);
+
+
+
+  //setup output width
+  FValueAreaX:=3;
+  if FLAxis.Visible then FValueAreaX+=3+getVertAxisWidth(FLAxis);
+  FValueAreaRight:=result.Width-3;
+  if legend.visible then FValueAreaRight-=3+legend.width;
+  if FRAxis.Visible then FValueAreaRight-=AXIS_SIZE;
+
+  FValueAreaWidth:=FValueAreaRight- FValueAreaX;
+  if FValueAreaWidth<=0 then exit;
+
+  if cvX in FClipValues then begin
+    RealValueRect.Left:=fvalueAreaX;
+    RealValueRect.Right:=FValueAreaRight;
+  end else begin
+    RealValueRect.Left:=0;
+    RealValueRect.Right:=result.width;
+  end;
+
+  //setup ranges (horizontal)
+  if fmodel.dataRows>0 then begin
+    if FAutoSetRangeX then begin
+      FRangeMinX:=fmodel.minX;
+      if IsInfinite(FRangeMinX) or IsNan(FRangeMinX) then FRangeMinX:=0;
+      FRangeMaxX:=fmodel.maxX;
+      if IsInfinite(FRangeMaxX) or IsNan(FRangeMaxX) or (FRangeMaxX<=FRangeMinX) then
+        FRangeMaxX:=FRangeMinX+5;
+    end;
+    if FTAxis.rangePolicy=rpAuto then FTAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    if FXMAxis.rangePolicy=rpAuto then FXMAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+    if FBAxis.rangePolicy=rpAuto then FBAxis.rangeChanged(FRangeMinX,FRangeMaxX,FValueAreaWidth);
+  end;
+  xstart:=RangeMinX;
+  xend:=RangeMaxX;
+  xfactor:=FValueAreaWidth / (xend-xstart);
 
 
   with result.Canvas do begin
