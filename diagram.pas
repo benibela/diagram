@@ -170,13 +170,13 @@ type
     //**If ytolerance is NaN, the x tolerance is used for it
     //**If the point isn't found, it returns -1
     //**The default implementation checks all points TODO: implement binary search
-    function find(i:longint; const x:float; const y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    function find(i:longint; const x:float; const y:float; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
     //**like find but set the position to the correct values (default calls find)
-    function findAndGet(i:longint; var x:float; var y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    function findAndGet(i:longint; var x:float; var y:float; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
     //**like find but searchs in all rows and returns the correct one (default calls find)
-    function findWithRow(out i:longint; const x:float; const y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    function findWithRow(out i:longint; const x:float; const y:float; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
     //**like findRow but set the position to the correct values (default calls findAndGet)
-    function findWithRowAndGet(out i:longint; var x:float; var y:float=NaN; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
+    function findWithRowAndGet(out i:longint; var x:float; var y:float; const xtolerance:float=DiagramEpsilon; const ytolerance:float=NaN):longint;virtual;
 
     function dataX(i,j:longint):float; //**<returns x of point i,j, calls data
     function dataY(i,j:longint):float; //**<returns y of point i,j, calls data
@@ -2946,4 +2946,4 @@ begin
   Result:=TAbstractDiagramModel(FModels[m]).getRowPointStyle(r);
 end;
 
-end.
+end.
