@@ -1570,6 +1570,7 @@ var
 
 var i,j,pos,legendX:longint;
     usedLineStyle: TLineStyle;
+    range: Float;
 begin
   result:=Diagram;
   canvas:=result.canvas;
@@ -1623,7 +1624,9 @@ begin
   end;
   ystart:=RangeMinY;
   yend:=RangeMaxY;
-  yfactor:=FValueAreaHeight / (yend-ystart);
+  range := yend-ystart;
+  if IsZero(range) then exit;
+  yfactor:=FValueAreaHeight / range;
 
 
 
@@ -1660,7 +1663,9 @@ begin
   end;
   xstart:=RangeMinX;
   xend:=RangeMaxX;
-  xfactor:=FValueAreaWidth / (xend-xstart);
+  range := xend-xstart;
+  if IsZero(range) then exit;
+  xfactor:=FValueAreaWidth / range;
 
 
   with result.Canvas do begin
@@ -1760,13 +1765,21 @@ begin
 end;
 
 function TDiagramDrawer.dataToPosX(const x: float): integer;
+var
+  range: Float;
 begin
-  result:=round((x-RangeMinX)*FValueAreaWidth / (RangeMaxX-RangeMinX))+FValueAreaX;
+  range := RangeMaxX-RangeMinX;
+  if IsZero(range) then exit(0);
+  result:=round((x-RangeMinX)*FValueAreaWidth / range)+FValueAreaX;
 end;
 
 function TDiagramDrawer.dataToPosY(const y: float): integer;
+var
+  range: Float;
 begin
-  result:=FValueAreaBottom-round((y-RangeMinY)*FValueAreaHeight / (RangeMaxY-RangeMinY));
+  range := RangeMaxY-RangeMinY;
+  if IsZero(range) then exit(0);
+  result:=FValueAreaBottom-round((y-RangeMinY)*FValueAreaHeight / range);
 end;
 
 function TDiagramDrawer.pixelSizeX: float;
