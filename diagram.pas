@@ -1,6 +1,6 @@
 unit diagram;
 
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$COperators on}
 
 interface
 
