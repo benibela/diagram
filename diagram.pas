@@ -1256,12 +1256,12 @@ var
       fx0,fy0,fx1,fy1,fx2,fy2: float;
       spline: TDiagramSplinePiece;
   begin
+    FillChar(spline, sizeof(spline), 0);
     //see also lineYatX, here the splines map P [x1, x2] |-> [y1, y2]
     FModel.data(id,0,fx1,fy1);
     translate(fx1,fy1,x1,y1);
     canvas.MoveTo(x1,y1);
     FModel.data(id,1,fx2,fy2);
-    FillChar(spline,sizeof(spline),0);
     updateSpline3P(spline,fx1-2*(fx2-fx1),fy1,fx1,fy1,fx2,fy2);
     for i:=1 to fModel.dataPoints(id)-1 do begin
       //next point
@@ -1395,8 +1395,14 @@ var
   procedure drawFillingMinOverMax();
   var i,j,r,k,x,temp,y,yi: LongInt;
       fx:float;
-      tempY,tempYMap,tempMaxX,tempMinX:array of longint;
-      xmid, RStart, GStart, BStart: array of longint; //needed for gradient
+      tempY:array of longint = nil;
+      tempYMap:array of longint = nil;
+      tempMaxX:array of longint = nil;
+      tempMinX:array of longint = nil;
+      xmid: array of longint = nil; //needed for gradient
+      RStart: array of longint = nil; //needed for gradient
+      GStart: array of longint = nil; //needed for gradient
+      BStart: array of longint = nil; //needed for gradient
       tempLazImage:TLazIntfImage;
   begin
     if fgGradientY in FFillGradient then begin
@@ -1825,7 +1831,9 @@ procedure TAbstractDiagramModel.calculateSplines(defaultLineStyle: TLineStyle);
 //taken from Wikipedia
 var r,i,n,im:longint;
     xpi,xi,l,alpha:float;
-    h,z,my: array of float;
+    h: array of float = nil;
+    z: array of float = nil;
+    my: array of float = nil;
     needSplines: boolean;
 begin
   //TODO: find a way to remove the old spline data if it is no longer used (problem even if no view need them, the user app still can need them for lineApproximationAtX)
